@@ -10,9 +10,9 @@
  *   node live/check.ts              # accounts × quotas × entitlements, then the
  *                                   # free-tier request matrix (tool calls, caps,
  *                                   # reasoning, vision, streaming)
- *   node live/check.ts --snapshot   # print the FREE_TIER_SNAPSHOT rows for
- *                                   # catalog.ts (piping them in is how the
- *                                   # shipped snapshot was produced)
+ *   node live/check.ts --snapshot   # print ONLY the FREE_TIER_SNAPSHOT rows on
+ *                                   # stdout (everything else goes to stderr),
+ *                                   # for splicing into catalog.ts
  *   node live/check.ts --surface    # re-probe /v1/responses and /v1/messages
  *
  * Everything here is a fact the plugin claims; the point of the file is that
@@ -291,7 +291,11 @@ async function main(): Promise<void> {
 
   const listing = (await get(`${api}/models`)).json;
   const entries = parseListing(listing);
-  console.log(`gateway ${api} · ${entries.length} chat ids · tiers: ${[...new Set(entries.map((e) => e.tier))].join(",")}`);
+  // stderr, not stdout: `--snapshot` pipes this file's output straight into
+  // catalog.ts, and one stray header line becomes a syntax error there.
+  console.error(
+    `gateway ${api} · ${entries.length} chat ids · tiers: ${[...new Set(entries.map((e) => e.tier))].join(",")}`,
+  );
 
   if (mode === "--snapshot") {
     await snapshot(api);

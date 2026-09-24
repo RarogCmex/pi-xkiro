@@ -13,6 +13,7 @@ import {
   createProvider,
   envApiKeyAuth,
   type ApiKeyAuth,
+  type AssistantMessage,
   type AssistantMessageEvent,
   type AuthInteraction,
   type Model,
@@ -29,6 +30,7 @@ import {
   fetchXkiroModels,
   probeEntitlement,
   registerTiers,
+  tierCounts,
   tierOf,
   type Entitlement,
 } from "./discovery.ts";
@@ -45,8 +47,8 @@ import {
   type XkiroModel,
 } from "./models.ts";
 import { TIERS_ENV_VAR } from "./models.ts";
-import type { CatalogEntry } from "./catalog.ts";
-import { failureKindForMessage, failureKindForStatus, XkiroKeyPool, type FailureKind } from "./keys.ts";
+import type { CatalogEntry, XkiroTier } from "./catalog.ts";
+import { failureKindForMessage, failureKindForStatus, gatingEnabled, XkiroKeyPool, type FailureKind } from "./keys.ts";
 
 export const API_KEY_AUTH_NAME = `${PROVIDER_NAME} API key`;
 
@@ -168,6 +170,28 @@ function isContentEvent(event: AssistantMessageEvent): boolean {
   return event.type !== "start" && event.type !== "done" && event.type !== "error";
 }
 
+/** Blank assistant message for this provider — every terminal event needs one. */
+function emptyAssistant(model: Model<XkiroApi>): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: PROVIDER_ID,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "error",
+    errorMessage: "",
+    timestamp: 0,
+  };
+}
+
 /** Minimal assistant message for an adapter that threw instead of yielding an
  *  `error` event (pi requires a terminal event on every stream). */
 function syntheticError(model: Model<XkiroApi>, error: unknown): Extract<AssistantMessageEvent, { type: "error" }> {
@@ -175,24 +199,105 @@ function syntheticError(model: Model<XkiroApi>, error: unknown): Extract<Assista
     type: "error",
     reason: "error",
     error: {
-      role: "assistant",
-      content: [],
-      api: model.api,
-      provider: PROVIDER_ID,
-      model: model.id,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
+      ...emptyAssistant(model),
       stopReason: "error",
       errorMessage: error instanceof Error ? error.message : String(error),
       timestamp: Date.now(),
     },
   };
+}
+
+/**
+ * What the whole pool can run: the union of every account we have measured.
+ * pi resolves one credential per provider, but this pool holds several, so the
+ * answer to "may this picker show paid models" is "does any account in play
+ * unlock them" — otherwise an env-only setup (no stored credential at all)
+ * would filter by a key pi never handed us.
+ */
+export function poolEntitlement(pool: XkiroKeyPool): Entitlement | undefined {
+  const keys = pool.all();
+  const seen: Entitlement[] = [];
+  for (const key of keys) {
+    const entitlement = cachedEntitlement(key);
+    if (entitlement) seen.push(entitlement);
+  }
+  if (seen.length === 0) return undefined;
+  const tiers = [...new Set(seen.flatMap((entitlement) => entitlement.tiers))];
+  return { tiers, probed: seen.every((entitlement) => entitlement.probed) };
+}
+
+/** Russian plural: 1 модель / 2 модели / 5 моделей. */
+export function pluralRu(count: number, one: string, few: string, many: string): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+/** The refusal text, with the counts read from the live catalog rather than
+ * baked in — a mirror or a topped-up account changes both numbers. */
+export function gatedMessage(modelId: string, tier: XkiroTier, accounts: number): string {
+  const free = tierCounts().free;
+  const freeWord = pluralRu(free, "бесплатная модель", "бесплатные модели", "бесплатных моделей");
+  const accountsWord = pluralRu(accounts, "аккаунте", "аккаунтах", "аккаунтах");
+  return (
+    `xkiro: модель ${modelId} уровня "${tier}", а на ${accounts} ${accountsWord} из пула плана нет — ` +
+    `шлюз ответил бы 403 permission_denied. Открыта сейчас ${free} ${freeWord}: ` +
+    `выбери одну из них через /model, проверь остаток квоты в /xkiro, добавь в XKIRO_API_KEYS ` +
+    `ключ аккаунта с планом, либо отключи проверку (XKIRO_BLOCK_GATED=off).`
+  );
+}
+
+/**
+ * Which keys in the pool may run this model id, given what we already know
+ * about their accounts.
+ *
+ * This is the part of "filter paid models on a free tier" that the model
+ * *list* cannot do. Registration and `filterModels` hide gated ids from
+ * `/model`, but pi keeps an escape hatch: `--model xkiro/openai/gpt-5.6-sol`
+ * on an id it has never registered becomes a custom model and is still sent
+ * (verified — it cost a round trip to get `403 permission_denied`). So the
+ * transport decides per request:
+ *
+ *  - `unknown` — the id is not in any listing we have seen, or no account has
+ *    been probed yet. Not a denial: send it.
+ *  - `restricted` — some probed account can run it, so pin the request to
+ *    those keys. This is what makes a mixed pool (one plan-holding account in
+ *    `XKIRO_API_KEYS`) useful instead of randomly 403-ing.
+ *  - `blocked` — every account we measured is free-only, and the model is
+ *    `paid`/`premium`. Refuse before the network and say why; the answer is
+ *    already known and each attempt would burn nothing but latency.
+ */
+export type TierDecision =
+  | { kind: "unknown" }
+  | { kind: "restricted"; keys: string[] }
+  | { kind: "blocked"; tier: XkiroTier };
+
+export function selectKeysForTier(
+  modelId: string,
+  poolKeys: readonly string[],
+  view: {
+    tierOf: (id: string) => XkiroTier | undefined;
+    entitlementOf: (key: string) => Entitlement | undefined;
+  },
+): TierDecision {
+  const tier = view.tierOf(modelId);
+  if (!tier || tier === "free") return { kind: "unknown" };
+
+  const able: string[] = [];
+  let measured = 0;
+  for (const key of poolKeys) {
+    const entitlement = view.entitlementOf(key);
+    if (!entitlement) continue;
+    measured += 1;
+    if (entitlement.tiers.includes(tier)) able.push(key);
+  }
+  if (able.length > 0) return { kind: "restricted", keys: able };
+  // Unmeasured accounts get the benefit of the doubt: their plan may be live
+  // and simply not probed yet in this process.
+  if (measured < poolKeys.length || poolKeys.length === 0) return { kind: "unknown" };
+  return { kind: "blocked", tier };
 }
 
 /**
@@ -208,9 +313,10 @@ function syntheticError(model: Model<XkiroApi>, error: unknown): Extract<Assista
 export function withKeyRotation(
   api: ProviderStreams,
   pool: XkiroKeyPool,
-  options?: { maxAttempts?: number; sleep?: (ms: number) => Promise<void> },
+  options?: { maxAttempts?: number; sleep?: (ms: number) => Promise<void>; gating?: boolean },
 ): ProviderStreams {
   const maxAttempts = options?.maxAttempts ?? MAX_KEY_ATTEMPTS;
+  const gating = options?.gating ?? true;
   const sleep = options?.sleep ?? (async (ms: number) => await new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   async function pump<TOptions extends StreamOptions | SimpleStreamOptions>(
@@ -222,13 +328,38 @@ export function withKeyRotation(
   ): Promise<void> {
     const tried: string[] = [];
     let emittedStart = false;
+    let eligibleKeys: string[] | undefined;
     // pi may hand us a key it resolved outside this pool (`--api-key`, a
     // models.json entry). Seed it so a single-key setup can never end up with
     // an empty pool and a hard error where a plain request would have worked.
     if (incoming?.apiKey) pool.addCredentialKey(incoming.apiKey, "request");
 
+    if (gating) {
+      const decision = selectKeysForTier(model.id, pool.all(), {
+        tierOf,
+        entitlementOf: (key) => cachedEntitlement(key),
+      });
+      if (decision.kind === "blocked") {
+        out.push({
+          type: "error",
+          reason: "error",
+          error: {
+            ...emptyAssistant(model),
+            api: model.api,
+            provider: PROVIDER_ID,
+            model: model.id,
+            stopReason: "error",
+            errorMessage: gatedMessage(model.id, decision.tier, pool.all().length),
+            timestamp: Date.now(),
+          },
+        });
+        return;
+      }
+      if (decision.kind === "restricted") eligibleKeys = decision.keys;
+    }
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const key = pool.pick(incoming?.sessionId, tried);
+      const key = pool.pick(incoming?.sessionId, tried, eligibleKeys);
       if (!key) break;
       tried.push(key);
 
@@ -361,8 +492,12 @@ export function buildXkiroProvider(api: XkiroApis, build: BuildOptions = {}): Pr
     // visible: a clarified 403 is a better failure than a model silently
     // vanishing from the picker.
     filterModels: (models, credential) => {
+      // An explicit XKIRO_TIERS list is the user overriding entitlement
+      // detection; filtering it back down here would silently undo the one
+      // thing they asked for.
+      if (tiers !== "auto") return models;
       const key = credential?.type === "api_key" ? credential.key?.trim() : undefined;
-      const entitlement = key ? cachedEntitlement(key) : undefined;
+      const entitlement = (key ? cachedEntitlement(key) : undefined) ?? poolEntitlement(pool);
       if (!entitlement) return models;
       const allowed = new Set(entitlement.tiers);
       return models.filter((model) => {
@@ -370,7 +505,11 @@ export function buildXkiroProvider(api: XkiroApis, build: BuildOptions = {}): Pr
         return tier === undefined || allowed.has(tier);
       });
     },
-    api: { "openai-completions": withKeyRotation(api["openai-completions"], pool) },
+    api: {
+      "openai-completions": withKeyRotation(api["openai-completions"], pool, {
+        gating: gatingEnabled(env),
+      }),
+    },
   });
   return provider;
 }

@@ -29,7 +29,14 @@
 // pi-modelverse / pi-siliconflow).
 import { openAICompletionsApi } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fetchListing, knownTiers, probeEntitlement, registerTiers, startupCatalog } from "./discovery.ts";
+import {
+  fetchListing,
+  knownTiers,
+  prefetchEntitlements,
+  probeEntitlement,
+  registerTiers,
+  startupCatalog,
+} from "./discovery.ts";
 import { clarifyError } from "./errors.ts";
 import { API_KEY_ENV_VAR, PROVIDER_ID, resolveBaseUrl, resolveTiers } from "./models.ts";
 import { parseInlineKeys } from "./keys.ts";
@@ -54,10 +61,16 @@ export default async function (pi: ExtensionAPI) {
   // is what makes a widened `XKIRO_TIERS` (and the live prices/caps) visible
   // to `pi --list-models` and `--model` on the very first run. Failure is not
   // an option here: `undefined` falls back to the bundled snapshot.
-  // Balance the pool before the first request: with one conversation per
-  // process, "pick the account with the most free tokens left today" is the
-  // only spread that survives across pi invocations.
-  if (pool.all().length > 1) await balancePool(pool, baseUrl);
+  // Measure every account in the pool once, up front. This single round of
+  // `GET /v1/usage` is what makes three later things possible without another
+  // request: the tier gate refusing paid models on a free-only account,
+  // `filterModels` hiding them from /model, and balancing sessions by the free
+  // quota each account has left.
+  const keys = pool.all();
+  if (keys.length > 0) {
+    await prefetchEntitlements(baseUrl, keys, STARTUP_CATALOG_TIMEOUT_MS);
+    if (keys.length > 1) balancePool(pool, baseUrl);
+  }
 
   const initialEntries = await startupCatalog(
     baseUrl,

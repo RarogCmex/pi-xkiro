@@ -24,6 +24,10 @@ import {
   BALANCE_BAND,
   balancePool,
   buildXkiroProvider,
+  gatedMessage,
+  pluralRu,
+  poolEntitlement,
+  selectKeysForTier,
   describeEntitlement,
   MAX_KEY_ATTEMPTS,
   withKeyRotation,
@@ -31,7 +35,8 @@ import {
 } from "../provider.ts";
 import { XkiroKeyPool } from "../keys.ts";
 import { PROVIDER_ID, DEFAULT_BASE_URL, type XkiroApi } from "../models.ts";
-import { clearEntitlementCache, rememberEntitlement } from "../discovery.ts";
+import type { XkiroTier } from "../catalog.ts";
+import { clearEntitlementCache, rememberEntitlement, tierCounts } from "../discovery.ts";
 
 const K1 = "sk-xt-key-one-1111";
 const K2 = "sk-xt-key-two-2222";
@@ -325,6 +330,7 @@ test("auth.login: a valid key reports its account, an invalid one is not saved",
   assert.match(notices[0], /осталось 456,723 из 500,000 бесплатных токенов сегодня/);
   assert.match(notices[0], /доступно 3\/7/);
 
+  clearEntitlementCache(); // the probe above cached K1; a login must re-ask the gateway
   const rejected = xkiroApiKeyAuth(DEFAULT_BASE_URL, new XkiroKeyPool({ env: {} }), (async () =>
     new Response("{}", { status: 401 })) as unknown as typeof fetch);
   await assert.rejects(
@@ -333,6 +339,7 @@ test("auth.login: a valid key reports its account, an invalid one is not saved",
     /не принял ключ/,
   );
 
+  clearEntitlementCache();
   const prefixNotices: string[] = [];
   const wrongShape = await xkiroApiKeyAuth(DEFAULT_BASE_URL, new XkiroKeyPool({ env: {} }), fetchImpl).login!({
     signal: new AbortController().signal,
@@ -452,4 +459,152 @@ test("balancePool: a single-key pool is a no-op", async () => {
     throw new Error("must not probe");
   }) as unknown as typeof fetch;
   assert.deepEqual(await balancePool(pool, DEFAULT_BASE_URL, { fetchImpl }), [K1]);
+});
+
+// ---------------------------------------------------------------------------
+// Free-tier gating: a model no account in the pool can run must not be asked
+// of the gateway at all.
+// ---------------------------------------------------------------------------
+
+const PAID_MODEL: Model<XkiroApi> = { ...model, id: "openai/gpt-5.6-sol" };
+const PLAN_KEY = "sk-xt-key-plan-5555";
+
+function poolWithPlan(): XkiroKeyPool {
+  return new XkiroKeyPool({ env: { XKIRO_API_KEYS: `${K1},${K2},${PLAN_KEY}` } });
+}
+
+test("selectKeysForTier: free models and unseen ids are never gated", () => {
+  const view = {
+    tierOf: (id: string) => (id === PAID_MODEL.id ? ("paid" as const) : id === "mysterious/new" ? undefined : ("free" as const)),
+    entitlementOf: () => ({ tiers: ["free"] as XkiroTier[], probed: true }),
+  };
+  assert.deepEqual(selectKeysForTier(model.id, [K1], view), { kind: "unknown" });
+  assert.deepEqual(selectKeysForTier("mysterious/new", [K1], view), { kind: "unknown" }, "an id we have never seen is not a denial");
+});
+
+test("selectKeysForTier: blocked only when EVERY measured account is free-only", () => {
+  const freeOnly = { tiers: ["free"] as XkiroTier[], probed: true };
+  const planned = { tiers: ["free", "paid", "premium"] as XkiroTier[], probed: true };
+  const tierOfPaid = (id: string) => (id === PAID_MODEL.id ? ("paid" as const) : undefined);
+
+  assert.deepEqual(selectKeysForTier(PAID_MODEL.id, [K1, K2], { tierOf: tierOfPaid, entitlementOf: () => freeOnly }), {
+    kind: "blocked",
+    tier: "paid",
+  });
+  assert.deepEqual(
+    selectKeysForTier(PAID_MODEL.id, [K1, K2], { tierOf: tierOfPaid, entitlementOf: (key) => (key === K2 ? planned : freeOnly) }),
+    { kind: "restricted", keys: [K2] },
+    "one plan-holding account is enough to send it — pinned to that account",
+  );
+  assert.deepEqual(
+    selectKeysForTier(PAID_MODEL.id, [K1, K2], { tierOf: tierOfPaid, entitlementOf: (key) => (key === K2 ? undefined : freeOnly) }),
+    { kind: "unknown" },
+    "an unmeasured account gets the benefit of the doubt",
+  );
+  assert.deepEqual(selectKeysForTier(PAID_MODEL.id, [], { tierOf: tierOfPaid, entitlementOf: () => undefined }), { kind: "unknown" });
+});
+
+test("gating: a paid model on a free-only pool is refused without touching the network", async () => {
+  clearEntitlementCache();
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  rememberEntitlement(K2, { tiers: ["free"], probed: true });
+  const fake = fakeApi([outcome(succeed("pong"))]);
+  const events = await collect(
+    withKeyRotation(fake.api, poolOf(), { sleep: async () => {} }).streamSimple(PAID_MODEL, context, { apiKey: K1, sessionId: "s1" }),
+  );
+  assert.equal(fake.attempts.length, 0, "the whole point: no request, no 95-second wait, no upstream bill");
+  const last = events.at(-1);
+  assert.ok(last && last.type === "error");
+  assert.match(last.error.errorMessage ?? "", /XKIRO_BLOCK_GATED=off/);
+  assert.match(last.error.errorMessage ?? "", /403 permission_denied/);
+});
+
+test("gating: a mixed pool routes the paid model to the account that can run it", async () => {
+  clearEntitlementCache();
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  rememberEntitlement(K2, { tiers: ["free"], probed: true });
+  rememberEntitlement(PLAN_KEY, { tiers: ["free", "paid", "premium"], probed: true });
+  const fake = fakeApi([outcome(succeed("pong"))]);
+  const events = await collect(
+    withKeyRotation(fake.api, poolWithPlan(), { sleep: async () => {} }).streamSimple(PAID_MODEL, context, {
+      apiKey: K1,
+      sessionId: "s1",
+    }),
+  );
+  assert.deepEqual(fake.attempts.map((attempt) => attempt.apiKey), [PLAN_KEY]);
+  assert.equal(events.at(-1)?.type, "done");
+});
+
+test("gating: XKIRO_BLOCK_GATED=off lets the request through to get a real answer", async () => {
+  clearEntitlementCache();
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  rememberEntitlement(K2, { tiers: ["free"], probed: true });
+  const fake = fakeApi([outcome(fail("permission_denied"), 403)]);
+  const pool = poolOf();
+  const events = await collect(
+    withKeyRotation(fake.api, pool, { gating: false, sleep: async () => {} }).streamSimple(PAID_MODEL, context, {
+      apiKey: K1,
+      sessionId: "s1",
+    }),
+  );
+  assert.equal(fake.attempts.length, 1, "sent, and answered 403 as the gateway does");
+  assert.equal(events.at(-1)?.type, "error");
+  assert.equal(pool.status().every((entry) => entry.coolingMs === 0), true, "a 403 is not a capacity signal");
+});
+
+test("gating: an entitlement we never measured must not hide or block anything", async () => {
+  clearEntitlementCache();
+  const fake = fakeApi([outcome(succeed("pong"))]);
+  const events = await collect(
+    withKeyRotation(fake.api, poolOf(), { sleep: async () => {} }).streamSimple(PAID_MODEL, context, { apiKey: K1, sessionId: "s1" }),
+  );
+  assert.equal(fake.attempts.length, 1, "unknown account → ask the gateway, do not guess");
+  assert.equal(events.at(-1)?.type, "done");
+});
+
+test("poolEntitlement: union over the pool, undefined when nothing is measured", () => {
+  clearEntitlementCache();
+  const pool = poolWithPlan();
+  assert.equal(poolEntitlement(pool), undefined);
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  assert.deepEqual(poolEntitlement(pool)!.tiers, ["free"]);
+  rememberEntitlement(PLAN_KEY, { tiers: ["free", "paid"], probed: true });
+  assert.deepEqual(poolEntitlement(pool)!.tiers.sort(), ["free", "paid"]);
+});
+
+test("filterModels: an explicit XKIRO_TIERS list is not filtered back down", async () => {
+  clearEntitlementCache();
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  const fake = fakeApi([outcome(succeed("x"))]);
+  const widened = buildXkiroProvider(
+    { "openai-completions": fake.api },
+    { env: { XKIRO_TIERS: "free,paid,premium" }, baseUrl: DEFAULT_BASE_URL },
+  );
+  const all = [...widened.getModels(), { ...PAID_MODEL }];
+  const kept = widened.filterModels!(all, { type: "api_key", key: K1 });
+  assert.equal(kept.length, all.length, "the user asked for every tier; entitlement detection must not undo it");
+
+  const automatic = buildXkiroProvider({ "openai-completions": fake.api }, { env: {}, baseUrl: DEFAULT_BASE_URL });
+  const filtered = automatic.filterModels!(all, { type: "api_key", key: K1 });
+  assert.ok(filtered.length < all.length, "auto mode does hide gated ids once the account is known");
+});
+
+test("pluralRu: russian counts read correctly", () => {
+  assert.equal(pluralRu(1, "модель", "модели", "моделей"), "модель");
+  assert.equal(pluralRu(2, "модель", "модели", "моделей"), "модели");
+  assert.equal(pluralRu(5, "модель", "модели", "моделей"), "моделей");
+  assert.equal(pluralRu(11, "модель", "модели", "моделей"), "моделей");
+  assert.equal(pluralRu(21, "модель", "модели", "моделей"), "модель");
+  assert.equal(pluralRu(42, "модель", "модели", "моделей"), "модели");
+});
+
+test("gatedMessage: counts come from the catalog, not from a captured constant", () => {
+  const message = gatedMessage("openai/gpt-5.6-sol", "paid", 3);
+  assert.match(message, /openai\/gpt-5\.6-sol уровня "paid"/);
+  assert.match(message, /на 3 аккаунтах/);
+  assert.match(message, /403 permission_denied/);
+  assert.match(message, /XKIRO_BLOCK_GATED=off/);
+  const free = tierCounts().free;
+  assert.match(message, new RegExp(`Открыта сейчас ${free} `), "the number must track the live catalog");
+  assert.ok(!/37 id/.test(message), "no baked-in catalog size");
 });

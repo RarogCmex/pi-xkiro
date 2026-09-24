@@ -119,12 +119,35 @@ export function entitlementFromUsage(usage: unknown): Entitlement {
 const tiers = new Map<string, XkiroTier>(FREE_TIER_SNAPSHOT.map((entry) => [entry.id, entry.tier]));
 
 export function registerTiers(entries: readonly CatalogEntry[]): void {
-  for (const entry of entries) tiers.set(entry.id, entry.tier);
+  const counts: Record<XkiroTier, number> = { free: 0, paid: 0, premium: 0 };
+  for (const entry of entries) {
+    tiers.set(entry.id, entry.tier);
+    counts[entry.tier] += 1;
+  }
+  listingCounts = counts;
 }
 
 /** undefined = this build has never seen the id. */
 export function tierOf(id: string): XkiroTier | undefined {
   return tiers.get(id);
+}
+
+/**
+ * How many ids sit in each tier **in the catalog currently in play**.
+ *
+ * Deliberately not `tiers.size`: that registry accumulates every listing this
+ * process has ever seen (the bundled snapshot, then a mirror, then the real
+ * gateway), and a mirror with one free model would otherwise be described as
+ * having thirty-eight. Counts answer "what can I pick right now", so they come
+ * from the last listing parsed, falling back to the snapshot before any.
+ */
+let listingCounts: Record<XkiroTier, number> | undefined;
+
+export function tierCounts(): Record<XkiroTier, number> {
+  if (listingCounts) return { ...listingCounts };
+  const counts: Record<XkiroTier, number> = { free: 0, paid: 0, premium: 0 };
+  for (const entry of FREE_TIER_SNAPSHOT) counts[entry.tier] += 1;
+  return counts;
 }
 
 /** Every known id with its tier, for `/xkiro`. */
@@ -152,13 +175,21 @@ export function clearEntitlementCache(): void {
   entitlements.clear();
 }
 
-/** `GET /v1/usage` for one key. Never throws; failure = free-only assumption. */
+/**
+ * `GET /v1/usage` for one key. Never throws; failure = free-only assumption.
+ *
+ * Cache-aware: a fresh result for this key is returned as-is, so the startup
+ * prefetch, `/login`, `/xkiro` and the model refresh all share one probe per
+ * key per `ENTITLEMENT_TTL_MS` instead of each paying for it.
+ */
 export async function probeEntitlement(
   baseUrl: string,
   key: string,
   timeoutMs = 8_000,
   fetchImpl: typeof fetch = fetch,
 ): Promise<Entitlement> {
+  const fresh = cachedEntitlement(key);
+  if (fresh) return fresh;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -265,6 +296,29 @@ export async function fetchXkiroModels({
     models: listing.filter((entry) => allowed.has(entry.tier)).map((entry) => entryToModel(entry, baseUrl)),
   };
   return lastOverlay.models;
+}
+
+/**
+ * Measure every account in play, once, before pi selects a model.
+ *
+ * The transport's tier gate and `filterModels` both ask "can this account run
+ * paid models?", and an unmeasured account must not be refused — so the answer
+ * has to exist by the time the first request goes out. One `GET /v1/usage` per
+ * key, in parallel, bounded; failures simply stay unmeasured.
+ */
+export async function prefetchEntitlements(
+  baseUrl: string,
+  keys: readonly string[],
+  timeoutMs = 4_000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Map<string, Entitlement>> {
+  const out = new Map<string, Entitlement>();
+  await Promise.all(
+    keys.map(async (key) => {
+      out.set(key, await probeEntitlement(baseUrl, key, timeoutMs, fetchImpl));
+    }),
+  );
+  return out;
 }
 
 /**

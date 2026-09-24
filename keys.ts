@@ -29,6 +29,7 @@ export const KEYS_ENV_VAR = "XKIRO_API_KEYS";
 export const SINGLE_KEY_ENV_VAR = "XKIRO_API_KEY";
 export const KEYS_FILE_ENV_VAR = "XKIRO_API_KEYS_FILE";
 export const ROTATION_ENV_VAR = "XKIRO_KEY_ROTATION";
+
 export const DEFAULT_KEYS_FILE_NAME = "~/.pi/agent/xkiro-keys.json";
 
 /** Sources whose entries survive a `refresh()` that does not list them. */
@@ -97,6 +98,15 @@ export function fingerprint(key: string): string {
   for (let i = 0; i < key.length; i++) hash = ((hash << 5) + hash + key.charCodeAt(i)) | 0;
   const hex = (hash >>> 0).toString(16).padStart(8, "0").slice(0, 6);
   return `${hex}…${key.slice(-4)}`;
+}
+
+/** Gate paid/premium models on accounts that cannot run them (default: on). */
+export const BLOCK_GATED_ENV_VAR = "XKIRO_BLOCK_GATED";
+
+export function gatingEnabled(env: Record<string, string | undefined>): boolean {
+  const raw = env[BLOCK_GATED_ENV_VAR]?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return true;
+  return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
 }
 
 /** `off`/`0`/`false` disables rotation; anything else (including unset) keeps it on. */
@@ -270,9 +280,17 @@ export class XkiroKeyPool {
 
   /** The key for one request: the session's sticky key when it is still
    *  eligible, otherwise the next eligible one (rotating cursor).
-   *  `exclude` skips keys this logical request already burned. */
-  pick(sessionId?: string, exclude: readonly string[] = []): string | undefined {
-    const ready = this.available().filter((key) => !exclude.includes(key));
+   *  `exclude` skips keys this logical request already burned; `only` restricts
+   *  the choice to keys that can actually serve the requested model (see
+   *  `selectKeysForTier` in provider.ts). An `only` list that nothing survives
+   *  falls back to the unrestricted choice, because an entitlement we have not
+   *  measured is not a denial. */
+  pick(sessionId?: string, exclude: readonly string[] = [], only?: readonly string[]): string | undefined {
+    let ready = this.available().filter((key) => !exclude.includes(key));
+    if (only?.length) {
+      const narrowed = ready.filter((key) => only.includes(key));
+      if (narrowed.length > 0) ready = narrowed;
+    }
     if (ready.length === 0) return undefined;
     const rotation = rotationEnabled(this.opts.env);
     if (sessionId && rotation) {

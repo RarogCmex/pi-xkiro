@@ -9,12 +9,16 @@ import { readFileSync } from "node:fs";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import {
   clearEntitlementCache,
+  cachedEntitlement,
   clearLastGoodListing,
+  ENTITLEMENT_TTL_MS,
   entitlementFromUsage,
   fetchListing,
   fetchXkiroModels,
   parseListing,
+  prefetchEntitlements,
   probeEntitlement,
+  rememberEntitlement,
   registerTiers,
   tierOf,
   ALL_TIERS,
@@ -199,4 +203,40 @@ test("fetchListing / probeEntitlement: no key still reads the public catalog, qu
   const anonymous = await probeEntitlement("https://api.xkiro.com/v1", "sk-xt-missing", 1000, fetchOnce({ "/usage": { status: 401, body: {} } }));
   assert.equal(anonymous.probed, false);
   assert.deepEqual(anonymous.tiers, FREE_ONLY);
+});
+
+test("probeEntitlement: a fresh probe is reused, an expired one is re-fetched", async () => {
+  clearEntitlementCache();
+  let hits = 0;
+  const fetchImpl = (async () => {
+    hits += 1;
+    return new Response(JSON.stringify({ free_tokens: { remaining: 5, limit_per_day: 9 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const first = await probeEntitlement("https://api.xkiro.com/v1", "sk-xt-cached", 1000, fetchImpl);
+  const second = await probeEntitlement("https://api.xkiro.com/v1", "sk-xt-cached", 1000, fetchImpl);
+  assert.equal(hits, 1, "the transport, /xkiro and the refresh must share one probe per key");
+  assert.deepEqual(first.tiers, second.tiers);
+
+  const later = await probeEntitlement("https://api.xkiro.com/v1", "sk-xt-cached", 1000, (async () => {
+    hits += 1;
+    return new Response(JSON.stringify({ plan: "pro", free_tokens: { remaining: 5, limit_per_day: 9 } }), { status: 200 });
+  }) as unknown as typeof fetch);
+  assert.deepEqual(later.tiers, second.tiers, "still the cached answer within the TTL");
+
+  rememberEntitlement("sk-xt-cached", { tiers: FREE_ONLY, probed: true }, Date.now() - ENTITLEMENT_TTL_MS - 1);
+  await probeEntitlement("https://api.xkiro.com/v1", "sk-xt-cached", 1000, fetchImpl);
+  assert.equal(hits, 2, "an expired entry is probed again");
+});
+
+test("prefetchEntitlements: measures every account in one pass", async () => {
+  clearEntitlementCache();
+  let hits = 0;
+  const fetchImpl = (async () => {
+    hits += 1;
+    return new Response(JSON.stringify({ free_tokens: { remaining: 100, limit_per_day: 100 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const measured = await prefetchEntitlements("https://api.xkiro.com/v1", ["a", "b", "c"], 1000, fetchImpl);
+  assert.equal(measured.size, 3);
+  assert.equal(hits, 3, "once per account, in parallel");
+  assert.ok(cachedEntitlement("b"), "and the result is what the gate will later read");
 });
