@@ -322,7 +322,7 @@ test("auth.login: a valid key reports its account, an invalid one is not saved",
   assert.equal(notices.length, 1);
   assert.match(notices[0], /free-account@example.test/);
   assert.match(notices[0], /уровни free/);
-  assert.match(notices[0], /456,723\/500,000/);
+  assert.match(notices[0], /осталось 456,723 из 500,000 бесплатных токенов сегодня/);
   assert.match(notices[0], /доступно 3\/7/);
 
   const rejected = xkiroApiKeyAuth(DEFAULT_BASE_URL, new XkiroKeyPool({ env: {} }), (async () =>
@@ -362,7 +362,10 @@ test("describeEntitlement: readable for both states", () => {
     120,
     37,
   );
-  assert.match(line, /a@b\.test · уровни free · квота сегодня 100\/500 токенов · моделей доступно 37\/120 \(нужен депозит для платных\)/);
+  assert.equal(
+    line,
+    "a@b.test · уровни free · осталось 100 из 500 бесплатных токенов сегодня · моделей доступно 37/120 (нужен депозит для платных)",
+  );
 });
 
 test("buildXkiroProvider: registers the free snapshot offline and filters by entitlement", async () => {

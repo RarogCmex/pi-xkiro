@@ -45,6 +45,12 @@ function readSecretEnv(): SecretEnv {
 
 const TIMEOUT_MS = 90_000;
 
+/** [1x1 red pixel, 64x64 red square] — both are valid PNGs. */
+const TINY_AND_REAL = [
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwJfEBvYvYxhD+HEIgwW4zVn764YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAjJ9cQ+sy0baAAAAAElFTkSuQmCC",
+];
+
 /** Never throws: a hang or a transport error is a RESULT, not a crash. The
  *  first full run of this file died on a model that ignored its output cap
  *  and ran past the timeout, which is exactly the behaviour being measured. */
@@ -179,20 +185,19 @@ async function matrix(api: string, key: string, entries: CatalogEntry[]): Promis
     });
     cells.push(reasoned.status === 200 ? "ok" : String(reasoned.status));
 
-    // 5. vision, only where published. Two payloads on purpose: a real
-    // screenshot-sized PNG and a 1x1 pixel. The free tier behaves differently
-    // for them (qwen/*:free answers 500 to both; some routes answer 400 to the
-    // 10x10 and 200 to the 1x1), and a single probe would have hidden that.
+    // 5. vision, only where published. TWO payloads, and both must be real
+    // PNGs: the first version of this check used a 1x1 pixel and a
+    // hand-assembled base64 blob, and both produced failures that belonged to
+    // the probe, not to the gateway (qwen/*:free answered 500 to a 1x1 image
+    // and 200 "Red" to a valid 64x64 one; the malformed blob was the reason
+    // for a 400 "could not be loaded"). Measure with real images.
     if (!entry.input.includes("image")) {
       cells.push("-", "-");
     } else {
-      const tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-      const wide =
-        "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAAP0lEQVR42u3PMQEAAAgDoPn" +
-        "-3G3AwzGQSCaSSSaSSSaSSSaSSSb+swcyWWUFBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBob3A" +
-        "0uSFglFRUVFRUVFRUVFRUVFRf0LZGVlZWVlZWVlZWVlZWVlZWX1A3wYGgkqKioqKioqKioqKioqKv4HNDU1NTU1NTU1NTU1NTU1" +
-        "NTVfHJrACQ4OYPsAAAAASUVORK5CYII=";
-      for (const pixel of [tiny, wide]) {
+
+      // 64x64 solid red PNG (zlib/struct, no dependencies):
+      //   python3 -c "import zlib,struct,base64;w=h=64;raw=b''.join(b'\x00'+bytes([220,30,45])*w for _ in range(h));c=lambda t,d:struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d));print(base64.b64encode(b'\x89PNG\r\n\x1a\n'+c(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+c(b'IDAT',zlib.compress(raw))+c(b'IEND',b'')).decode())"
+      for (const pixel of TINY_AND_REAL) {
         const seen = await post(`${api}/chat/completions`, key, {
           model: entry.id,
           max_completion_tokens: 3000,
@@ -206,7 +211,9 @@ async function matrix(api: string, key: string, entries: CatalogEntry[]): Promis
             },
           ],
         });
-        cells.push(seen.status === 200 ? "ok" : String(seen.status));
+        const answer = typeof seen.json?.choices?.[0]?.message?.content === "string" ? seen.json.choices[0].message.content.trim() : "";
+        const ok = seen.status === 200 && /red/i.test(answer);
+        cells.push(seen.status !== 200 ? String(seen.status) : ok ? "ok" : answer.slice(0, 6) || "empty");
       }
     }
 

@@ -82,7 +82,7 @@ export function probeUsage(
 export function describeEntitlement(entitlement: Entitlement, total: number, usable: number): string {
   const quota =
     entitlement.freeLimitPerDay !== undefined
-      ? `квота сегодня ${(entitlement.freeRemainingToday ?? 0).toLocaleString("en-US")}/${entitlement.freeLimitPerDay.toLocaleString("en-US")} токенов`
+      ? `осталось ${(entitlement.freeRemainingToday ?? 0).toLocaleString("en-US")} из ${entitlement.freeLimitPerDay.toLocaleString("en-US")} бесплатных токенов сегодня`
       : "квота неизвестна";
   return (
     `${entitlement.email ?? "аккаунт неизвестен"} · уровни ${entitlement.tiers.join("+")} · ${quota} · ` +
