@@ -25,6 +25,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 
 export const KEYS_ENV_VAR = "XKIRO_API_KEYS";
+/** The single-key variable, matching `API_KEY_ENV_VAR` in models.ts. */
+export const SINGLE_KEY_ENV_VAR = "XKIRO_API_KEY";
 export const KEYS_FILE_ENV_VAR = "XKIRO_API_KEYS_FILE";
 export const ROTATION_ENV_VAR = "XKIRO_KEY_ROTATION";
 export const DEFAULT_KEYS_FILE_NAME = "~/.pi/agent/xkiro-keys.json";
@@ -155,7 +157,7 @@ export class XkiroKeyPool {
   envKeys(): string[] {
     return this.refresh().filter((key) => {
       const source = this.entries.get(key)?.source;
-      return source === KEYS_ENV_VAR || source === KEYS_FILE_ENV_VAR || source === "XKIRO_API_KEY";
+      return source === KEYS_ENV_VAR || source === KEYS_FILE_ENV_VAR || source === SINGLE_KEY_ENV_VAR;
     });
   }
 
@@ -210,8 +212,8 @@ export class XkiroKeyPool {
     const found: { key: string; source: string }[] = [];
     for (const key of parseInlineKeys(this.opts.env[KEYS_ENV_VAR])) found.push({ key, source: KEYS_ENV_VAR });
     for (const key of this.fromFile()) found.push({ key, source: KEYS_FILE_ENV_VAR });
-    const single = this.opts.env["XKIRO_API_KEY"]?.trim();
-    if (single) found.push({ key: single, source: "XKIRO_API_KEY" });
+    const single = this.opts.env[SINGLE_KEY_ENV_VAR]?.trim();
+    if (single) found.push({ key: single, source: SINGLE_KEY_ENV_VAR });
 
     const seen = new Set<string>();
     const merged: string[] = [];

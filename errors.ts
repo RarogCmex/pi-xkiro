@@ -58,7 +58,7 @@ export function clarifyTierError(message: string): string | undefined {
 /** Daily free-quota exhaustion and empty wallet: `429 rate_limit_exceeded` /
  *  `402 insufficient_quota` (docs /api/errors/ status table). */
 const QUOTA_RE =
-  /insufficient[ _-]?quota| insufficient balance|daily (?:free )?(?:token )?limit|free_tokens|limit_per_day|exhausted for today|usage limit reached/i;
+  /insufficient[ _-]?quota|insufficient balance|daily (?:free )?(?:token )?limit|free_tokens|limit_per_day|exhausted for today|usage limit reached/i;
 
 export function clarifyQuotaError(message: string): string | undefined {
   if (!QUOTA_RE.test(message)) return undefined;

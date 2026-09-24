@@ -31,7 +31,7 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { fetchListing, knownTiers, probeEntitlement, registerTiers, startupCatalog } from "./discovery.ts";
 import { clarifyError } from "./errors.ts";
-import { API_KEY_ENV_VAR, DEFAULT_BASE_URL, PROVIDER_ID, resolveBaseUrl, resolveTiers } from "./models.ts";
+import { API_KEY_ENV_VAR, PROVIDER_ID, resolveBaseUrl, resolveTiers } from "./models.ts";
 import { parseInlineKeys } from "./keys.ts";
 import { balancePool, buildXkiroProvider, createPool, describeEntitlement, type XkiroApis } from "./provider.ts";
 import { fingerprint } from "./keys.ts";
@@ -152,5 +152,3 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 }
-
-export { DEFAULT_BASE_URL };
