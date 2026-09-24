@@ -1,0 +1,8 @@
+{
+  "object": "usage",
+  "plan": "pro",
+  "user": { "name": "Example User", "email": "funded-account@example.test" },
+  "windows": [],
+  "free_tokens": { "used_today": 120, "limit_per_day": 1000000, "remaining": 999880 },
+  "wallet": { "balance_usd": "12.500000", "held_usd": "0.000000" }
+}

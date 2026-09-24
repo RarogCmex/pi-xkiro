@@ -1,0 +1,35 @@
+{
+  "name": "pi-xkiro",
+  "private": true,
+  "version": "0.1.0",
+  "description": "xKiro (api.xkiro.com) provider for pi — live USD catalog with per-model reasoning levels, entitlement-aware free/paid/premium registration, multi-account key pool for the daily free quota.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "xkiro",
+    "openai-compat",
+    "free-tier",
+    "key-pool"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm run test",
+    "live": "node live/check.ts"
+  }
+}

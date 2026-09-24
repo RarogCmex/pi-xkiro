@@ -1,0 +1,37 @@
+{
+  // Тайпчек против типов пи:
+  //   npm run typecheck   (tsc -p tsconfig.json)
+  //
+  // Требует симлинки (вне гита):
+  //   mkdir -p node_modules/@earendil-works node_modules/@types
+  //   ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent \
+  //     node_modules/@earendil-works/pi-coding-agent
+  //   ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai \
+  //     node_modules/@earendil-works/pi-ai
+  //   ln -sfn ~/pi-plugins/pi-alibaba-models/node_modules/@types/node \
+  //     node_modules/@types/node
+  //
+  // `paths` mirrors pi's extension loader, which aliases the bare
+  // "@earendil-works/pi-ai" specifier to pi-ai's compat entrypoint (a strict
+  // superset of the core one). Without this, tsc resolves the bare specifier to
+  // dist/index.d.ts and reports openAICompletionsApi as missing even though pi
+  // provides it at runtime. See the note in index.ts.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@earendil-works/pi-ai": ["./node_modules/@earendil-works/pi-ai/dist/compat.d.ts"],
+      "@earendil-works/pi-ai/*": [
+        "./node_modules/@earendil-works/pi-ai/dist/*.d.ts",
+        "./node_modules/@earendil-works/pi-ai/dist/*"
+      ]
+    }
+  },
+  "include": ["*.ts", "test/*.ts", "live/*.ts"]
+}

@@ -1,0 +1,8 @@
+{
+  "object": "usage",
+  "plan": null,
+  "user": { "name": "Example User", "email": "free-account@example.test" },
+  "windows": [],
+  "free_tokens": { "used_today": 43277, "limit_per_day": 500000, "remaining": 456723 },
+  "wallet": { "balance_usd": "0.000000", "held_usd": "0.000000" }
+}
