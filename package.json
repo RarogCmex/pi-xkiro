@@ -1,9 +1,17 @@
 {
-  "name": "pi-xkiro",
-  "private": true,
+  "name": "@rarogcmex/pi-xkiro",
   "version": "0.1.0",
   "description": "xKiro (api.xkiro.com) provider for pi — live USD catalog with per-model reasoning levels, entitlement-aware free/paid/premium registration, multi-account key pool for the daily free quota.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RarogCmex/pi-xkiro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RarogCmex/pi-xkiro/issues"
+  },
+  "homepage": "https://github.com/RarogCmex/pi-xkiro#readme",
   "keywords": [
     "pi-package",
     "pi",
@@ -13,6 +21,12 @@
     "free-tier",
     "key-pool"
   ],
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm run test",
+    "live": "node live/check.ts"
+  },
   "pi": {
     "extensions": [
       "./index.ts"
@@ -26,10 +40,7 @@
       "optional": true
     }
   },
-  "scripts": {
-    "test": "node --test",
-    "typecheck": "tsc -p tsconfig.json",
-    "check": "npm run typecheck && npm run test",
-    "live": "node live/check.ts"
+  "publishConfig": {
+    "access": "public"
   }
 }
