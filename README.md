@@ -17,12 +17,11 @@ xKiro — шлюз «одна ручка — много вендоров»: 125 
 ## Установка
 
 ```bash
-# из каталога с исходниками
-pi -e .                      # разово, для проверки
-# постоянно:
-pi install /Users/rarogcmex/pi-plugins/pi-xkiro
-# или добавить в ~/.pi/agent/settings.json:
-#   "packages": ["/Users/rarogcmex/pi-plugins/pi-xkiro"]
+pi install git:github.com/RarogCmex/pi-xkiro@main
+# или локально
+pi install /path/to/pi-xkiro
+# разово, для проверки (из каталога с исходниками)
+pi -e .
 ```
 
 Ключ:
@@ -344,7 +343,7 @@ Typecheck требует симлинки вне гита (см. коммент�
 mkdir -p node_modules/@earendil-works node_modules/@types
 ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent node_modules/@earendil-works/pi-coding-agent
 ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai node_modules/@earendil-works/pi-ai
-ln -sfn ~/pi-plugins/pi-alibaba-models/node_modules/@types/node node_modules/@types/node
+ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@types/node node_modules/@types/node
 ```
 
 Файлы:
