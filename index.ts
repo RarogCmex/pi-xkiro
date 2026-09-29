@@ -25,8 +25,8 @@
 // re-exports the protocol adapters (`openAICompletionsApi`). Subpaths other
 // than /compat, /oauth and /providers/all are NOT aliased. tsconfig.json
 // mirrors the alias so `npm run typecheck` sees what pi sees. This is the only
-// pi-runtime-only module boundary in the package (same contract as
-// pi-modelverse / pi-siliconflow).
+// pi-runtime-only module boundary in the package: every other file must import
+// cleanly under plain Node, so the tests can run it.
 import { openAICompletionsApi } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -84,7 +84,8 @@ export default async function (pi: ExtensionAPI) {
   // limit of N tokens" does not trigger auto-compaction until pi recognizes it
   // as `context_length_exceeded`, and "requires an active paid plan or real
   // deposited balance" reads like a broken key when it is a tier gate.
-  // Error-stop-guarded and provider-scoped, in the siblings' order.
+  // Error-stop-guarded and provider-scoped, and ordered so an overflow is never
+  // mistaken for a tier gate.
   pi.on("message_end", (event) => {
     const message = event.message;
     if (message.role !== "assistant") return;

@@ -4,8 +4,8 @@
  * Split out from `index.ts` so it can be imported and exercised under plain
  * Node — everything here resolves through pi-ai's core entrypoint. The symbol
  * that lives only in the compat entrypoint (the OpenAI Completions adapter) is
- * injected by `index.ts` instead of imported here. Same contract as the
- * pi-modelverse / pi-siliconflow siblings.
+ * injected by `index.ts` instead of imported here, so this file stays importable
+ * — and testable — under plain Node.
  */
 
 import {
@@ -99,10 +99,11 @@ export function describeEntitlement(entitlement: Entitlement, total: number, usa
  * reports back is the *account* — email, plan, wallet, remaining free tokens
  * for today, and therefore which tiers this key can actually run.
  *
- * On this gateway that is the whole key↔model mapping. Unlike Modelverse,
- * `GET /v1/models` returns the same 120 rows for every caller (docs,
- * /api/list-models/: "it is not filtered by account"); what differs per key is
- * entitlement and the daily free-token pool.
+ * On this gateway that is the whole key↔model mapping. `GET /v1/models` returns
+ * the same rows for every caller — the listing is not filtered by account (docs,
+ * /api/list-models/) — so what differs per key is entitlement (`access_tier` ×
+ * plan) and the daily free-token pool, not the set of ids. The row count moves
+ * during the day; nothing here may hardcode it.
  */
 export function xkiroApiKeyAuth(baseUrl: string, pool: XkiroKeyPool, fetchImpl: typeof fetch = fetch): ApiKeyAuth {
   const base = envApiKeyAuth(API_KEY_AUTH_NAME, [API_KEY_ENV_VAR]);

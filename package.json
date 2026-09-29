@@ -4,6 +4,9 @@
   "description": "xKiro (api.xkiro.com) provider for pi — live USD catalog with per-model reasoning levels, entitlement-aware free/paid/premium registration, multi-account key pool for the daily free quota.",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/RarogCmex/pi-xkiro.git"

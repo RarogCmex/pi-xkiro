@@ -2,14 +2,13 @@
   // Тайпчек против типов пи:
   //   npm run typecheck   (tsc -p tsconfig.json)
   //
-  // Требует симлинки (вне гита):
-  //   mkdir -p node_modules/@earendil-works node_modules/@types
-  //   ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent \
-  //     node_modules/@earendil-works/pi-coding-agent
-  //   ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai \
-  //     node_modules/@earendil-works/pi-ai
-  //   ln -sfn ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@types/node \
-  //     node_modules/@types/node
+  // Требует один раз слинковать пакеты самого pi (вне гита):
+  //   node scripts/link-pi.mjs
+  // Скрипт сам находит глобальную установку pi (префикс npm, nvm, pnpm,
+  // ~/.local, /usr/local или каталог, куда резолвится исполняемый `pi`) и
+  // линкует @earendil-works/pi-coding-agent, @earendil-works/pi-ai и @types/node
+  // (на Windows — junctions). Для конкретной установки:
+  //   PI_ROOT=/path/to/node_modules node scripts/link-pi.mjs  //     node_modules/@types/node
   //
   // `paths` mirrors pi's extension loader, which aliases the bare
   // "@earendil-works/pi-ai" specifier to pi-ai's compat entrypoint (a strict

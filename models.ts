@@ -1,7 +1,7 @@
 /**
  * Catalog → pi `Model`, plus the gateway facts that are not per-model.
  *
- * Two things every sibling gateway plugin has to decide and this one does too:
+ * Two things any gateway plugin has to decide, and this one decides both:
  *
  *  1. **Wire surface.** xKiro serves three (`/chat/completions`,
  *     `/v1/messages`, `/v1/responses`) and all three were probed working with
@@ -207,8 +207,8 @@ export function entryToModel(entry: CatalogEntry, baseUrl: string): XkiroModel {
     model.thinkingLevelMap = map;
   } else if (entry.reasoning) {
     // Reasons, but exposes no control (the majority of the catalog): pi must
-    // not offer /thinking levels it cannot honour. Same shape the siblings use
-    // for always-on models.
+    // not offer /thinking levels it cannot honour. `{ off: null }` is how pi
+    // expresses "always on, nothing to switch".
     model.thinkingLevelMap = { off: null };
   }
   return model;

@@ -30,6 +30,12 @@ export const SINGLE_KEY_ENV_VAR = "XKIRO_API_KEY";
 export const KEYS_FILE_ENV_VAR = "XKIRO_API_KEYS_FILE";
 export const ROTATION_ENV_VAR = "XKIRO_KEY_ROTATION";
 
+/**
+ * Documented default *location* for a key-pool file. Note that nothing reads it
+ * implicitly: `fromFile()` honours only an explicit `XKIRO_API_KEYS_FILE`, so a
+ * file at this path is picked up only when the env var points at it. Kept as the
+ * conventional location the README and `/login` messages name.
+ */
 export const DEFAULT_KEYS_FILE_NAME = "~/.pi/agent/xkiro-keys.json";
 
 /** Sources whose entries survive a `refresh()` that does not list them. */
@@ -379,8 +385,9 @@ export function failureKindForStatus(status: number | undefined, body?: string):
 
 /**
  * Same classification, but from the composed `errorMessage` pi hands back —
- * the HTTP status is not carried on the message object, only in its text
- * ("<msg>" or "<status>: <body>", see pi-ai utils/error-body.js).
+ * the HTTP status is not carried on the message object, only in its text —
+ * pi-ai's error-body helper composes either "<msg>" or "<status>: <body>", so
+ * both forms have to classify.
  */
 export function failureKindForMessage(message: string): FailureKind | undefined {
   if (!message) return undefined;

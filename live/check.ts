@@ -45,15 +45,23 @@ function readSecretEnv(): SecretEnv {
 
 const TIMEOUT_MS = 90_000;
 
-/** [1x1 red pixel, 64x64 red square] — both are valid PNGs. */
+/**
+ * [1x1 red pixel, 64x64 red square] — both valid PNGs, base64-encoded.
+ *
+ * Both must be real, decodable PNGs. A hand-assembled base64 blob or a
+ * zero-length image produces failures that belong to the probe rather than to
+ * the gateway (a malformed blob reads as `400 Image … could not be loaded`), so
+ * the fixtures below are kept as literals and regenerated with any standard
+ * image tool, not built inline.
+ */
 const TINY_AND_REAL = [
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwJfEBvYvYxhD+HEIgwW4zVn764YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAjJ9cQ+sy0baAAAAAElFTkSuQmCC",
 ];
 
-/** Never throws: a hang or a transport error is a RESULT, not a crash. The
- *  first full run of this file died on a model that ignored its output cap
- *  and ran past the timeout, which is exactly the behaviour being measured. */
+/** Never throws: a hang or a transport error is a RESULT, not a crash. A model
+ *  that ignores its output cap runs past the timeout, and that is exactly the
+ *  behaviour being measured — so a timeout must be reportable, not fatal. */
 async function post(url: string, key: string, body: unknown): Promise<{ status: number; json: any }> {
   try {
     const response = await fetch(url, {
@@ -185,18 +193,15 @@ async function matrix(api: string, key: string, entries: CatalogEntry[]): Promis
     });
     cells.push(reasoned.status === 200 ? "ok" : String(reasoned.status));
 
-    // 5. vision, only where published. TWO payloads, and both must be real
-    // PNGs: the first version of this check used a 1x1 pixel and a
-    // hand-assembled base64 blob, and both produced failures that belonged to
-    // the probe, not to the gateway (qwen/*:free answered 500 to a 1x1 image
-    // and 200 "Red" to a valid 64x64 one; the malformed blob was the reason
-    // for a 400 "could not be loaded"). Measure with real images.
+    // 5. vision, only where published. TWO payloads — see the note on
+    // TINY_AND_REAL for why both must be real PNGs. The distinction matters:
+    // qwen/*:free answers 500 to a valid 1x1 image and 200 "Red" to a valid
+    // 64x64 one, so a tiny-image failure is a gateway property while a
+    // malformed-image failure is not.
     if (!entry.input.includes("image")) {
       cells.push("-", "-");
     } else {
 
-      // 64x64 solid red PNG (zlib/struct, no dependencies):
-      //   python3 -c "import zlib,struct,base64;w=h=64;raw=b''.join(b'\x00'+bytes([220,30,45])*w for _ in range(h));c=lambda t,d:struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d));print(base64.b64encode(b'\x89PNG\r\n\x1a\n'+c(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+c(b'IDAT',zlib.compress(raw))+c(b'IEND',b'')).decode())"
       for (const pixel of TINY_AND_REAL) {
         const seen = await post(`${api}/chat/completions`, key, {
           model: entry.id,

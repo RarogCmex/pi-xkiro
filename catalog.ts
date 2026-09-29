@@ -5,15 +5,17 @@
  * Data provenance — everything here traces to a live capture on 2026-09-24
  * against `https://api.xkiro.com/v1` (see `live/check.ts` to re-capture):
  *
- *   `GET /v1/models` is PUBLIC (no key) and returns 120 `modality:"chat"`
- *   entries with full metadata per id: `display_name`, `owned_by`,
+ *   `GET /v1/models` is PUBLIC (no key) and returns the full chat listing with
+ *   metadata per id (120 ids in the morning capture, 125 by that evening — the
+ *   gateway adds ids during the day, so no count here is authoritative):
+ *   `display_name`, `owned_by`,
  *   `access_tier` (free | paid | premium), `context_length`,
  *   `max_output_tokens`, `capabilities{vision,tools,reasoning}`, `pricing`
  *   (USD per 1M tokens: input/output/cache_read/cache_write) and, where the
  *   model exposes a control, `reasoning_efforts{levels,default}`.
  *
- *   Unlike Modelverse/SiliconFlow, this gateway is NOT per-key in what it
- *   LISTs (docs, /api/list-models/: "it is not filtered by account"). What a
+ *   This gateway is NOT per-key in what it LISTs (docs, /api/list-models/:
+ *   "it is not filtered by account"). What a
  *   key can CALL is decided by `access_tier` × account entitlement: `free`
  *   works on a zero-balance account, `paid`/`premium` answer
  *   `403 permission_denied` unless the account has a real deposit or a plan
@@ -41,8 +43,9 @@ export type XkiroTier = "free" | "paid" | "premium";
 export type XkiroApi = "openai-completions";
 
 /** `reasoning_efforts` as published. Absent means the model has no reasoning
- *  control at all (51 of the 120 ids) — sending `reasoning_effort` to those
- *  changes nothing and costs nothing (docs /guides/reasoning/). */
+ *  control at all — a majority of the listing (51 of the 120 ids in the
+ *  2026-09-24 morning capture) — and sending `reasoning_effort` to those changes
+ *  nothing and costs nothing (docs /guides/reasoning/). */
 export interface XkiroReasoningEfforts {
   levels: string[];
   default?: string;

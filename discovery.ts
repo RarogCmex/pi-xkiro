@@ -138,7 +138,7 @@ export function tierOf(id: string): XkiroTier | undefined {
  * Deliberately not `tiers.size`: that registry accumulates every listing this
  * process has ever seen (the bundled snapshot, then a mirror, then the real
  * gateway), and a mirror with one free model would otherwise be described as
- * having thirty-eight. Counts answer "what can I pick right now", so they come
+ * holding the whole free tier. Counts answer "what can I pick right now", so they come
  * from the last listing parsed, falling back to the snapshot before any.
  */
 let listingCounts: Record<XkiroTier, number> | undefined;
@@ -330,7 +330,7 @@ export async function prefetchEntitlements(
  * some later refresh. pi's documented answer is an async extension factory:
  * "Pi waits for asynchronous factories before startup continues, so providers
  * registered there are available to startup model selection and
- * `pi --list-models`" (docs/custom-provider.md). This function is what that
+ * `pi --list-models`" (pi's own custom-provider documentation). This function is what that
  * factory awaits: one public listing call (plus one quota probe when tiers are
  * automatic), bounded by `timeoutMs`, and `undefined` on any failure so the
  * caller falls back to the bundled snapshot rather than blocking startup.

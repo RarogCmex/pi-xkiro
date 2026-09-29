@@ -11,8 +11,8 @@
  *     the safe limit of 160000 tokens for this model." None of pi-ai's
  *     `OVERFLOW_PATTERNS` match that phrasing — `/exceeds the limit of \d+/`
  *     is GitHub Copilot's wording and "the **safe** limit" breaks it — so auto
- *     compaction would never fire. Same contract as the sibling plugins:
- *     prepend the `context_length_exceeded:` marker pi's classifier looks for.
+ *     compaction would never fire. The fix is to prepend the
+ *     `context_length_exceeded:` marker pi's classifier looks for.
  *     Rate limits must never be rewritten into a compaction trigger.
  *
  *  2. Tier gating. `403 permission_denied` on a `paid`/`premium` model reads
