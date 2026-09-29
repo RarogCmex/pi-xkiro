@@ -69,7 +69,7 @@ export function parseListing(payload: unknown): CatalogEntry[] {
  * Only a **plan** unlocks them. The docs phrase the gate as "an active paid
  * plan or real deposited balance" (/api/list-models/, /models/tiers/), which
  * reads as if any top-up would do — it does not: probed 2026-09-24 against an
- * account holding a live `wallet.balance_usd: 3.031618` and against the same
+ * account holding a live non-zero `wallet.balance_usd` and against the same
  * zero-balance accounts, and `openai/gpt-5.6-sol`, `openai/gpt-6-sol`,
  * `anthropic/claude-opus-5`, `z-ai/glm-5.2` and the cheapest paid id
  * (`z-ai/glm-4.6v-flashx`) answered `403 permission_denied` in both cases. So
