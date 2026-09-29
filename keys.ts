@@ -1,14 +1,19 @@
 /**
  * Key pool for xKiro.
  *
- * Why a pool at all: xKiro meters its free tier **per account**, not per key.
+ * Why a pool at all: xKiro meters its free tier **per account, not per key**.
  * `GET /v1/usage` (probed 2026-09-24) returns `free_tokens.{used_today,
- * limit_per_day, remaining}` and a `user.email`, and the five keys in
- * `secret.env` resolve to five DIFFERENT accounts — one with a 500 000
- * token/day allowance, four with 1 000 000 each, each with an independent
- * `used_today` counter. One key therefore burns 1/5 of the available free
- * throughput; a pool that keeps a pi session on one account and spreads
- * different sessions across accounts multiplies it.
+ * limit_per_day, remaining}` plus a `user.email`, and keys issued to different
+ * accounts carry independent `used_today` counters — several keys of ONE account
+ * share a single counter, several accounts give several. The daily allowance also
+ * differs per account, so a pool cannot assume a uniform budget.
+ *
+ * Consequence: a single key gives you one account's daily allowance however many
+ * keys of that account you hold. A pool that keeps one pi session pinned to one
+ * account (for cache affinity, below) and spreads *different* sessions across
+ * accounts is what actually multiplies free throughput. That is the whole reason
+ * this module exists, and it is measurable for any pool with `GET /v1/usage` —
+ * no property of the maintainer's own accounts is baked into the code.
  *
  * Sticky-per-session, not round-robin-per-request: the gateway routes to
  * upstreams that keep a prompt cache (`usage.prompt_tokens_details.cached_tokens`

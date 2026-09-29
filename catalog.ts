@@ -19,9 +19,10 @@
  *   key can CALL is decided by `access_tier` × account entitlement: `free`
  *   works on a zero-balance account, `paid`/`premium` answer
  *   `403 permission_denied` unless the account has a real deposit or a plan
- *   (probed 2026-09-24 with five keys across five accounts — all five got 403
- *   on `openai/gpt-5.6-sol`, `openai/gpt-6-sol` and `z-ai/glm-5.2`, all five
- *   got 200 on every `access_tier:"free"` id).
+ *   (probed 2026-09-24 across several *independent* accounts, which is what
+ *   makes it a property of the gateway rather than of one subscription: every
+ *   account got 403 on `openai/gpt-5.6-sol`, `openai/gpt-6-sol` and
+ *   `z-ai/glm-5.2`, and 200 on every `access_tier:"free"` id).
  *
  * So the catalog is fully dynamic in principle and the snapshot below is only
  * the offline baseline: the free tier, which is what an account with no
@@ -190,9 +191,11 @@ export function thinkingLevelMap(effort: XkiroReasoningEfforts | null | undefine
 }
 
 /**
- * Free-tier snapshot, captured 2026-09-24 from `GET /v1/models` (42 chat ids,
- * of which the 37 captured earlier today were all confirmed callable with all
- * five keys, tool-calling included). Regenerate with `node live/check.ts --snapshot`.
+ * Free-tier snapshot, captured 2026-09-24 from `GET /v1/models` (42 chat ids).
+ * The 37 ids captured earlier the same day were each confirmed callable on every
+ * key in the pool, tool-calling included; the five added by the evening capture
+ * carry the listing's metadata but were not individually probed.
+ * Regenerate with `node live/check.ts --snapshot`.
  *
  * Paid and premium ids are intentionally NOT baked in: they are unreachable
  * without a deposit, and the live listing adds them the moment the account is

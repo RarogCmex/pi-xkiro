@@ -1,10 +1,15 @@
 /**
- * Manual live checks against the real gateway. Reads ./secret.env (gitignored):
+ * Manual live checks against the real gateway. Reads ./secret.env — a LOCAL,
+ * gitignored file that is not in this repository; create it yourself:
  *
- *   API=https://api.xkiro.com/v1
- *   KEY1=…   # five keys, five separate accounts (probed 2026-09-24)
- *   …
- *   KEY5=…
+ *   API=https://api.xkiro.com/v1     # optional, this is the default
+ *   KEY1=sk-xt-…                     # one key per ACCOUNT: the free tier is
+ *   KEY2=sk-xt-…                     # metered per account, so several keys of
+ *   …                                # one account share a single daily counter
+ *   KEYn=sk-xt-…                     # and add nothing to the pool's throughput
+ *
+ * Every KEY<n> line is used; there is no fixed count. Without the file (or
+ * without at least one KEY) the script throws rather than probing anonymously.
  *
  * Run:
  *   node live/check.ts              # accounts × quotas × entitlements, then the

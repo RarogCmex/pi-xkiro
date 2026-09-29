@@ -8,9 +8,11 @@
  * ids exist" but "which tiers THIS key can run", and the answer comes from
  * `GET /v1/usage`: `plan`, `wallet.balance_usd` and `free_tokens`.
  *
- * Probed 2026-09-24: five keys on five accounts, all with `plan:null` and a
- * `0.000000` wallet → every `free` id answered 200, every `paid`/`premium` id
- * answered `403 permission_denied`. So the default registration is free-tier
+ * Probed 2026-09-24 across several independent accounts, every one with
+ * `plan:null` and a `0.000000` wallet → every `free` id answered 200, every
+ * `paid`/`premium` id answered `403 permission_denied`. Reproducing it needs any
+ * two accounts in different entitlement states, not a particular set. So the
+ * default registration is free-tier
  * only, widened automatically the moment an account has a plan or a deposit,
  * and widened by hand with `XKIRO_TIERS` when someone wants the full list in
  * the picker anyway.

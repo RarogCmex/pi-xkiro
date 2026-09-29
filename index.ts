@@ -12,12 +12,14 @@
  * actually unlocks, and readable rewrites for the gateway's tier-gating, quota
  * and non-standard context-overflow rejections.
  *
- * Verified against the live gateway on 2026-09-24 — README "Проверено руками"
- * holds the probe table (37/37 free models answering tool calls, the
- * `max_completion_tokens` cap ignored by `sensenova/*`, the 95-second blocking
- * cap that makes streaming mandatory, `reasoning_content` deltas, the
- * usage-only SSE frame, the 403/429/402/503 shapes, and the five keys on five
- * accounts with independent daily quotas).
+ * Verified against the live gateway on 2026-09-24. The full measurement journal
+ * is `research/2026-09-24-manual-probes.md`; README § "Проверено руками" carries
+ * the consequences and the free-tier matrix (every free id of the morning
+ * snapshot answering tool calls, the `max_completion_tokens` cap ignored by
+ * `sensenova/*`, the 95-second blocking cap that makes streaming mandatory,
+ * `reasoning_content` deltas, the usage-only SSE frame, the 403/429/402/503
+ * shapes, and per-account — not per-key — daily free quotas, which is why the
+ * pool exists).
  */
 
 // NOTE on this import: pi's extension loader aliases the bare
