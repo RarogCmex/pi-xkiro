@@ -59,11 +59,11 @@ test("entitlementFromUsage: a plan unlocks paid and premium", () => {
 });
 
 test("entitlementFromUsage: a wallet top-up does NOT unlock anything (live 403s, 2026-09-24)", () => {
-  // The docs say "an active paid plan or real deposited balance"; a real
-  // $3.03 balance on a plan-less account still answered 403 permission_denied
-  // on every paid and premium id probed. Registering those models anyway would
-  // hand pi a picker full of guaranteed failures.
-  for (const balance of ["3.031618", "100.000000", "0.000000"]) {
+  // The docs say "an active paid plan or real deposited balance"; measured
+  // 2026-09-24, a real non-zero balance on a plan-less account still answered
+  // 403 permission_denied on every paid and premium id probed. Registering
+  // those models anyway would hand pi a picker full of guaranteed failures.
+  for (const balance of ["1.250000", "100.000000", "0.000000"]) {
     const entitlement = entitlementFromUsage({ ...fundedUsage, plan: null, wallet: { balance_usd: balance } });
     assert.deepEqual(entitlement.tiers, FREE_ONLY, `balance ${balance} must not widen the catalog`);
     assert.equal(entitlement.balanceUsd, Number.parseFloat(balance), "still reported for /xkiro");
