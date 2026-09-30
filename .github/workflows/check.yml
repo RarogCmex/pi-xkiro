@@ -1,0 +1,72 @@
+---
+# Зачем это нужно. `peerDependencies` здесь намеренно `*` — так велят доки pi
+# (`docs/packages.md`: host-provided пакеты объявляются с диапазоном `"*"`),
+# поэтому новый pi молча загрузит расширение, и обновление хоста может сломать
+# допущения без единого коммита здесь. Это не гипотеза: 2026-09-30 pi 0.87.1 →
+# 0.99.1 изменил то, как тело ошибки доезжает до адаптера, и три теста fuelix
+# покраснели. Нашлось это случайно, через 20 минут после обновления pi;
+# еженедельное расписание ниже — то, что ловит такой дрейф само.
+#
+# TypeScript запиннен, потому что `npm run check` зовёт голый `tsc`, а
+# devDependencies в этих репах намеренно пусты (pi-пакеты линкуются из глобальной
+# установки скриптом `scripts/link-pi.mjs`): без пинна компилятором было бы то,
+# что случайно стоит на раннере. 5.9.3 — версия, которую уже пиннят
+# pi-paratera и pi-volcengine; на 7.0.2 все девять тоже typecheck'аются чисто
+# (измерено локально 2026-09-30).
+#
+# Прогоняется только офлайн-набор (`npm run check`); `live/` сюда не входит —
+# ему нужен ключ и он тратит реальные токены.
+name: check
+
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    # Понедельник 03:17 UTC.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Обе версии прогнаны локально 2026-09-30: 22 — нижняя граница `engines`
+        # у pi (>=22.19), 26 — то, на чём расширение разрабатывалось.
+        node: ["22", "26"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install the host (latest pi) and a pinned TypeScript
+        run: |
+          npm install --global @earendil-works/pi-coding-agent@latest typescript@5.9.3
+          node --version
+          npm --version
+          tsc --version
+          pi --version
+
+      - name: Link pi's packages into ./node_modules
+        run: node scripts/link-pi.mjs
+
+      - name: Typecheck and test
+        run: npm run check
