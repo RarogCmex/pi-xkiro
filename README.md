@@ -358,9 +358,9 @@ node live/check.ts --snapshot # перегенерировать снимок к
 node live/check.ts --surface  # перепроверить /v1/responses и /v1/messages
 ```
 
-**Предварительные условия.** Node ≥ 22.18 — и тесты, и `live/check.ts` это `.ts`,
-исполняемый напрямую (нативный type-stripping; обнаружение `.ts`-тестов у
-`node --test` включено без флага начиная с 22.18).
+**Предварительные условия.** Node ≥ 22.19 — нижнюю границу задаёт хост: `engines.node` у pi `>=22.19.0` (измерено и на 0.87.0, и на 1.0.0). Сам
+type-stripping без флага и обнаружение `.ts`-тестов у `node --test` доступны
+с 22.18.
 
 Пакеты pi (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
 `@types/node`) зависимостями не объявлены: в рантайме голый спецификатор
