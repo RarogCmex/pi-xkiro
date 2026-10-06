@@ -1,6 +1,6 @@
 {
   "name": "@rarogcmex/pi-xkiro",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "xKiro (api.xkiro.com) provider for pi — live USD catalog with per-model reasoning levels, entitlement-aware free/paid/premium registration, multi-account key pool for the daily free quota.",
   "type": "module",
   "license": "MIT",
