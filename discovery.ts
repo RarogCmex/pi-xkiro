@@ -120,6 +120,12 @@ export function entitlementFromUsage(usage: unknown): Entitlement {
  */
 const tiers = new Map<string, XkiroTier>(FREE_TIER_SNAPSHOT.map((entry) => [entry.id, entry.tier]));
 
+/** Measured corrections to the listing's `access_tier` — see the block comment
+ *  on `reportTierDenial` for why a 403 outranks the catalog. */
+const TIER_ORDER: readonly XkiroTier[] = ["free", "paid", "premium"];
+const learnedTiers = new Map<string, XkiroTier>();
+const refusedBy = new Map<string, Set<string>>();
+
 export function registerTiers(entries: readonly CatalogEntry[]): void {
   const counts: Record<XkiroTier, number> = { free: 0, paid: 0, premium: 0 };
   for (const entry of entries) {
@@ -129,9 +135,15 @@ export function registerTiers(entries: readonly CatalogEntry[]): void {
   listingCounts = counts;
 }
 
-/** undefined = this build has never seen the id. */
+/** undefined = this build has never seen the id. A learned refusal wins over
+ *  the listing: the gateway's own 403 is a measurement, `access_tier` is a claim. */
 export function tierOf(id: string): XkiroTier | undefined {
-  return tiers.get(id);
+  return learnedTiers.get(id) ?? tiers.get(id);
+}
+
+/** The tier a 403 taught us, or undefined when the id was never refused. */
+export function learnedTierOf(id: string): XkiroTier | undefined {
+  return learnedTiers.get(id);
 }
 
 /**
@@ -152,9 +164,152 @@ export function tierCounts(): Record<XkiroTier, number> {
   return counts;
 }
 
-/** Every known id with its tier, for `/xkiro`. */
-export function knownTiers(): readonly { id: string; tier: XkiroTier }[] {
-  return [...tiers.entries()].map(([id, tier]) => ({ id, tier }));
+/** Every known id with its tier, for `/xkiro`. `learned` marks the ids whose
+ *  tier came from a real 403 rather than from the listing. */
+export function knownTiers(): readonly { id: string; tier: XkiroTier; learned?: boolean }[] {
+  return [...tiers.entries()].map(([id, tier]) => {
+    const learned = learnedTiers.get(id);
+    return learned && learned !== tier ? { id, tier: learned, learned: true } : { id, tier };
+  });
+}
+
+/**
+ * Learned 403s — what the gateway enforces, as opposed to what it publishes.
+ *
+ * `access_tier` is a claim, and it can be wrong: probed 2026-10-08,
+ * `meta/muse-spark-1.2-contributor:free` is listed as `free` with a 0/0 price
+ * and answers `403 permission_denied` ("available to paying customers only") to
+ * a plan-less, wallet-less account. Nothing in the listing reveals that, so the
+ * tier gate cannot refuse what it believes is free: the first request always
+ * burns a round trip, and without a memory the picker keeps offering an id that
+ * has never once worked.
+ *
+ * Two facts are kept, because they answer two different questions:
+ *
+ *   - `learnedTiers`: the corrected tier of the id. Read through `tierOf`, so
+ *     every existing consumer — the pre-flight gate, `filterModels`,
+ *     `gatedMessage`, `/xkiro` — sees the correction without knowing it exists.
+ *   - `refusedBy`: which accounts were refused, by key fingerprint. A tier is
+ *     pool-wide but a refusal is per account: in a mixed pool the plan-holding
+ *     key may still be allowed, and only "every key we hold was refused" means
+ *     the id is unusable here.
+ *
+ * The correction only ever escalates (`free` → `paid` → `premium`): the lowest
+ * tier that explains a refusal from an account holding `held` is the one above
+ * `held`. A plan-holding account being refused leaves nothing above it, so the
+ * id keeps the top tier and `refusedBy` is what keeps it out of the picker.
+ * Both maps are per-process and cleared by `/xkiro reset` — a subscription can
+ * start mid-session, and a stale "no" must not outlive the fix.
+ *
+ * `reportTierDenial` returns the tier now believed for the id, which is what
+ * the caller's refusal message quotes.
+ */
+export function reportTierDenial(modelId: string, key: string | undefined, now = Date.now()): XkiroTier {
+  // An unmeasured account is assumed free-only, the same safe default every
+  // other consumer of the entitlement cache uses.
+  const held = cachedEntitlement(key, now)?.tiers ?? FREE_ONLY;
+  const published = tiers.get(modelId) ?? "free";
+  // Escalate from what we already believe, not from the listing: a refusal from
+  // a weaker account must not undo what a stronger one taught.
+  const current = learnedTiers.get(modelId) ?? published;
+  const highestHeld = held.reduce((top, tier) => Math.max(top, TIER_ORDER.indexOf(tier)), 0);
+  const implied = TIER_ORDER[Math.min(highestHeld + 1, TIER_ORDER.length - 1)] as XkiroTier;
+  const corrected = TIER_ORDER.indexOf(implied) > TIER_ORDER.indexOf(current) ? implied : current;
+  // Only a real correction is remembered as one: a `paid` id refused by a
+  // free-only account confirms the listing instead of contradicting it, and
+  // `/xkiro models` must not report it as a lie.
+  if (corrected !== published) learnedTiers.set(modelId, corrected);
+  if (key) {
+    const set = refusedBy.get(modelId) ?? new Set<string>();
+    set.add(fingerprint(key));
+    refusedBy.set(modelId, set);
+  }
+  return corrected;
+}
+
+/** Was the account behind this key refused this id? */
+export function isDeniedFor(modelId: string, key: string | undefined): boolean {
+  if (!key) return false;
+  return refusedBy.get(modelId)?.has(fingerprint(key)) ?? false;
+}
+
+/** Was every key in play refused this id? Empty pool = nothing learned. */
+export function deniedForAll(modelId: string, keys: readonly string[]): boolean {
+  return keys.length > 0 && keys.every((key) => isDeniedFor(modelId, key));
+}
+
+/** Learned refusals, for `/xkiro models`. Never contains a key. */
+export function learnedDenials(): readonly { id: string; listed: XkiroTier; tier: XkiroTier; accounts: number }[] {
+  return [...learnedTiers.entries()]
+    .map(([id, tier]) => ({ id, listed: tiers.get(id) ?? "free", tier, accounts: refusedBy.get(id)?.size ?? 0 }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+// ---------------------------------------------------------------------------
+// Over-capacity memory: "the gateway is not handing this model out right now".
+//
+// Deliberately separate from the learned tiers above. A 403 is a fact about the
+// account-to-model relation and outlives the session; `503 service_unavailable`
+// / `429 rate_limit_exceeded` is a fact about this minute. Measured 2026-11-03:
+// qwen/qwen3.7-flash:free answered 200 at 15:00 and 429 by 15:40 while the
+// account still had ~930k of its daily free tokens, then every qwen3.*:free id
+// was over capacity. So the window expires on its own — a model that came back
+// must come back here too, without the user having to know about `/xkiro reset`.
+// ---------------------------------------------------------------------------
+
+/** How long each status is believed. 503 = the model is drained right now and
+ *  the gateway says "retry in a moment"; 429 on the same ids clears faster. */
+export const UNAVAILABLE_TTL_MS: Readonly<Record<number, number>> = {
+  429: 5 * 60_000,
+  503: 15 * 60_000,
+};
+
+const unavailableUntil = new Map<string, number>();
+
+/** Record that this id answered over capacity. Returns the moment it expires. */
+export function reportModelUnavailable(modelId: string, status: number, now = Date.now()): number {
+  const ttl = UNAVAILABLE_TTL_MS[status] ?? UNAVAILABLE_TTL_MS[503];
+  const until = now + ttl;
+  const previous = unavailableUntil.get(modelId) ?? 0;
+  // A second refusal restarts the clock from the later of the two reports, so a
+  // stale early write can never shorten a fresh one.
+  unavailableUntil.set(modelId, Math.max(previous, until));
+  return unavailableUntil.get(modelId) as number;
+}
+
+/** When the mark expires, or undefined when the id is not marked. */
+export function unavailableUntilOf(modelId: string, now = Date.now()): number | undefined {
+  const until = unavailableUntil.get(modelId);
+  if (until === undefined) return undefined;
+  if (until > now) return until;
+  unavailableUntil.delete(modelId);
+  return undefined;
+}
+
+/** Is this id believed to be over capacity right now? */
+export function isModelUnavailableNow(modelId: string, now = Date.now()): boolean {
+  return unavailableUntilOf(modelId, now) !== undefined;
+}
+
+/** Marked ids with the time they have left, for `/xkiro models`. Sorted. */
+export function unavailableModels(now = Date.now()): readonly { id: string; secondsLeft: number }[] {
+  const rows: { id: string; secondsLeft: number }[] = [];
+  for (const id of [...unavailableUntil.keys()].sort()) {
+    const until = unavailableUntilOf(id, now);
+    if (until !== undefined) rows.push({ id, secondsLeft: Math.ceil((until - now) / 1000) });
+  }
+  return rows;
+}
+
+/** Forget every over-capacity mark (`/xkiro reset` and tests). */
+export function clearUnavailable(): void {
+  unavailableUntil.clear();
+}
+
+/** Forget every learned refusal (`/xkiro reset` and tests). */
+export function clearLearnedDenials(): void {
+  learnedTiers.clear();
+  refusedBy.clear();
 }
 
 /** One probe per key, cached for the process; refreshes re-probe. */

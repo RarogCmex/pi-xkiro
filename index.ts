@@ -32,12 +32,16 @@
 import { openAICompletionsApi } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  clearLearnedDenials,
+  clearUnavailable,
   fetchListing,
   knownTiers,
+  learnedDenials,
   prefetchEntitlements,
   probeEntitlement,
   registerTiers,
   startupCatalog,
+  unavailableModels,
 } from "./discovery.ts";
 import { clarifyError } from "./errors.ts";
 import { API_KEY_ENV_VAR, PROVIDER_ID, resolveBaseUrl, resolveTiers } from "./models.ts";
@@ -104,8 +108,8 @@ export default async function (pi: ExtensionAPI) {
 
   /**
    * `/xkiro` — which key unlocks what and how much free quota is left today.
-   * `/xkiro models` — catalog counts by tier. `/xkiro reset` — forget sticky
-   * session pinning and cooldowns.
+   * `/xkiro models` — catalog counts by tier, plus the ids a real 403 re-tiered.
+   * `/xkiro reset` — forget sticky session pinning, cooldowns and learned 403s.
    */
   pi.registerCommand("xkiro", {
     description: "Ключи xKiro: аккаунты, открытые уровни, остаток бесплатной квоты",
@@ -114,7 +118,13 @@ export default async function (pi: ExtensionAPI) {
 
       if (sub === "reset") {
         pool.reset();
-        ctx.ui.notify("xkiro: пул сброшен — закрепления сессий за ключами и остывание сняты.", "info");
+        clearLearnedDenials();
+        clearUnavailable();
+        ctx.ui.notify(
+          "xkiro: пул сброшен — закрепления сессий за ключами, остывание, запомненные отказы 403 " +
+            "и пометки «модель недоступна» сняты.",
+          "info",
+        );
         return;
       }
 
@@ -126,9 +136,27 @@ export default async function (pi: ExtensionAPI) {
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([tier, count]) => `  ${tier}: ${count}`)
           .join("\n");
+        // Ids whose tier a real 403 corrected. Worth printing: the listing says
+        // something else, so without this line the picker and the catalog
+        // disagree with no visible reason.
+        // Ids the gateway recently answered over capacity (503/429 about the
+        // model, not about the account). They expire by themselves, so printing
+        // the remaining seconds is the honest form: the picker will offer them
+        // again the moment the mark lapses.
+        const overCapacity = unavailableModels();
+        const downLines = overCapacity
+          .map((row) => `  ${row.id}: недоступна ~${row.secondsLeft} с (503/429 от шлюза, не ключ)`)
+          .join("\n");
+        const learned = learnedDenials();
+        const learnedLines = learned
+          .map((row) => `  ${row.id}: листинг говорит "${row.listed}", шлюз отказал → "${row.tier}" (${row.accounts} аккаунт(ов))`)
+          .join("\n");
         ctx.ui.notify(
           `xkiro: каталог — ${rows.length} id (включая недоступные уровни):\n${lines}\n` +
-            "Модели недоступного уровня скрыты из /model, пока ключ не получит депозит; XKIRO_TIERS=free,paid,premium показывает все.",
+            (learnedLines ? `\nЗапомненные отказы 403:\n${learnedLines}\n` : "") +
+            (downLines ? `\nНедоступны сейчас (перегрузка/лимит модели):\n${downLines}\n` : "") +
+            "Модели недоступного уровня скрыты из /model, пока ключ не получит депозит; XKIRO_TIERS=free,paid,premium показывает все." +
+            (learned.length ? " Сброс запомненного — /xkiro reset." : ""),
           "info",
         );
         return;

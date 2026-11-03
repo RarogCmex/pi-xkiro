@@ -26,14 +26,22 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   cachedEntitlement,
+  deniedForAll,
   fetchListing,
   fetchXkiroModels,
+  isDeniedFor,
+  isModelUnavailableNow,
+  learnedTierOf,
   probeEntitlement,
   registerTiers,
+  reportModelUnavailable,
+  reportTierDenial,
   tierCounts,
   tierOf,
+  unavailableUntilOf,
   type Entitlement,
 } from "./discovery.ts";
+import { isModelUnavailable, isTierDenial } from "./errors.ts";
 import {
   API_KEY_ENV_VAR,
   BASE_URL_ENV_VAR,
@@ -237,8 +245,11 @@ export function pluralRu(count: number, one: string, few: string, many: string):
 }
 
 /** The refusal text, with the counts read from the live catalog rather than
- * baked in — a mirror or a topped-up account changes both numbers. */
-export function gatedMessage(modelId: string, tier: XkiroTier, accounts: number): string {
+ * baked in — a mirror or a topped-up account changes both numbers. `learned`
+ * marks the refusals that came from a real 403 rather than from the listing's
+ * `access_tier`, which is worth saying out loud: the user is looking at an id
+ * the picker showed as free. */
+export function gatedMessage(modelId: string, tier: XkiroTier, accounts: number, learned = false): string {
   const free = tierCounts().free;
   const freeWord = pluralRu(free, "бесплатная модель", "бесплатные модели", "бесплатных моделей");
   const accountsWord = pluralRu(accounts, "аккаунте", "аккаунтах", "аккаунтах");
@@ -246,7 +257,10 @@ export function gatedMessage(modelId: string, tier: XkiroTier, accounts: number)
     `xkiro: модель ${modelId} уровня "${tier}", а на ${accounts} ${accountsWord} из пула плана нет — ` +
     `шлюз ответил бы 403 permission_denied. Открыта сейчас ${free} ${freeWord}: ` +
     `выбери одну из них через /model, проверь остаток квоты в /xkiro, добавь в XKIRO_API_KEYS ` +
-    `ключ аккаунта с планом, либо отключи проверку (XKIRO_BLOCK_GATED=off).`
+    `ключ аккаунта с планом, либо отключи проверку (XKIRO_BLOCK_GATED=off).` +
+    (learned
+      ? ` Уровень "${tier}" определён по фактическому 403, а не по листингу шлюза — до «/xkiro reset» модель больше не предлагается.`
+      : "")
   );
 }
 
@@ -269,6 +283,11 @@ export function gatedMessage(modelId: string, tier: XkiroTier, accounts: number)
  *  - `blocked` — every account we measured is free-only, and the model is
  *    `paid`/`premium`. Refuse before the network and say why; the answer is
  *    already known and each attempt would burn nothing but latency.
+ *
+ * A learned 403 (`deniedOf`) outranks both inputs: the gateway has already
+ * refused this id for that account, so no entitlement can argue it back in, and
+ * "every key we hold was refused" is a `blocked` even for an id the listing
+ * calls free.
  */
 export type TierDecision =
   | { kind: "unknown" }
@@ -281,24 +300,65 @@ export function selectKeysForTier(
   view: {
     tierOf: (id: string) => XkiroTier | undefined;
     entitlementOf: (key: string) => Entitlement | undefined;
+    /** Accounts the gateway has already refused THIS id. Omit when nothing has
+     *  been learned yet (a fresh process, or gating switched off). */
+    deniedOf?: (id: string, key: string) => boolean;
   },
 ): TierDecision {
   const tier = view.tierOf(modelId);
-  if (!tier || tier === "free") return { kind: "unknown" };
+  if (!tier) return { kind: "unknown" };
+
+  const refused = new Set(poolKeys.filter((key) => view.deniedOf?.(modelId, key) === true));
+  if (tier === "free" && refused.size === 0) return { kind: "unknown" };
+  const candidates = poolKeys.filter((key) => !refused.has(key));
+  // A refusal is a measurement, entitlement is only a guess — but only when the
+  // refusal contradicts the guess. An account whose entitlement already covered
+  // the tier and was refused anyway proves the listing under-rates the id, so
+  // the accounts that were NOT refused stay on offer even though their
+  // entitlement does not report the tier (the surviving account may hold a plan
+  // or a balance never probed in this process). An account refused *because* it
+  // lacked the tier merely confirms the listing, and then nothing changes:
+  // `blocked` when no measured account can serve it.
+  const contradictedBy = [...refused].find((key) => {
+    const entitlement = view.entitlementOf(key);
+    return entitlement !== undefined && entitlement.tiers.includes(tier);
+  });
+  if (contradictedBy !== undefined) {
+    return candidates.length > 0 ? { kind: "restricted", keys: candidates } : { kind: "blocked", tier };
+  }
 
   const able: string[] = [];
-  let measured = 0;
-  for (const key of poolKeys) {
+  // A refusal counts as a measurement: it is a stronger answer than a probe.
+  let measured = refused.size;
+  for (const key of candidates) {
     const entitlement = view.entitlementOf(key);
     if (!entitlement) continue;
     measured += 1;
-    if (entitlement.tiers.includes(tier)) able.push(key);
+    if (tier === "free" || entitlement.tiers.includes(tier)) able.push(key);
   }
   if (able.length > 0) return { kind: "restricted", keys: able };
+  // An empty pool has nothing to judge by: that is not a denial.
+  if (poolKeys.length === 0) return { kind: "unknown" };
+  // Every account we hold was refused this id — including ids the listing calls
+  // free, which is the whole reason the learned tier exists.
+  if (candidates.length === 0) return { kind: "blocked", tier };
   // Unmeasured accounts get the benefit of the doubt: their plan may be live
-  // and simply not probed yet in this process.
-  if (measured < poolKeys.length || poolKeys.length === 0) return { kind: "unknown" };
+  // and simply not probed yet in this process. A learned refusal is not doubt,
+  // it is an answer, so it never keeps a refused id "unknown".
+  if (measured < poolKeys.length) return { kind: "unknown" };
   return { kind: "blocked", tier };
+}
+
+/** The refusal the pre-flight gives when the gateway has just said this model
+ *  is over capacity. Says why, and how long, so nobody goes looking for a
+ *  broken key. */
+export function unavailableMessage(modelId: string, untilMs: number, now = Date.now()): string {
+  const seconds = Math.max(1, Math.ceil((untilMs - now) / 1000));
+  return (
+    `xkiro: модель ${modelId} не отдаётся — шлюз ответил, что она недоступна/перегружена ` +
+    `(это не ключ и не баланс: та же ошибка придёт на любом ключе). ` +
+    `Повтор через ~${seconds} с, либо выбери другую модель через /model; /xkiro reset снимает пометку.`
+  );
 }
 
 /**
@@ -335,10 +395,33 @@ export function withKeyRotation(
     // an empty pool and a hard error where a plain request would have worked.
     if (incoming?.apiKey) pool.addCredentialKey(incoming.apiKey, "request");
 
+    // Over capacity is checked before the tier gate: it is a fact about this
+    // model's supply, learned from the gateway's own 503/429, and it expires on
+    // its own (see `unavailableModels`). Sending the request anyway would spend
+    // a round trip to learn what the last one already said.
+    const unavailableUntil = unavailableUntilOf(model.id);
+    if (unavailableUntil !== undefined) {
+      out.push({
+        type: "error",
+        reason: "error",
+        error: {
+          ...emptyAssistant(model),
+          api: model.api,
+          provider: PROVIDER_ID,
+          model: model.id,
+          stopReason: "error",
+          errorMessage: unavailableMessage(model.id, unavailableUntil),
+          timestamp: Date.now(),
+        },
+      });
+      return;
+    }
+
     if (gating) {
       const decision = selectKeysForTier(model.id, pool.all(), {
         tierOf,
         entitlementOf: (key) => cachedEntitlement(key),
+        deniedOf: (id, key) => isDeniedFor(id, key),
       });
       if (decision.kind === "blocked") {
         out.push({
@@ -350,7 +433,7 @@ export function withKeyRotation(
             provider: PROVIDER_ID,
             model: model.id,
             stopReason: "error",
-            errorMessage: gatedMessage(model.id, decision.tier, pool.all().length),
+            errorMessage: gatedMessage(model.id, decision.tier, pool.all().length, learnedTierOf(model.id) !== undefined),
             timestamp: Date.now(),
           },
         });
@@ -402,8 +485,22 @@ export function withKeyRotation(
       }
 
       const message = errorEvent.error.errorMessage ?? "";
-      const kind: FailureKind | undefined =
-        errorEvent.reason === "aborted"
+      // A tier refusal is a fact about the MODEL, learned before anything else
+      // looks at the failure: the key is never parked for it (it is healthy —
+      // the gateway just says no to this account), and no capacity classifier
+      // may read the 403 body as a quota signal. The next request for this id
+      // is then either routed to a key that was not refused or refused here.
+      const denied = errorEvent.reason !== "aborted" && isTierDenial(seen.status, message);
+      if (denied) reportTierDenial(model.id, key);
+      // The other half of the same idea: a 503/429 that is about the model is
+      // remembered against the MODEL, never against the key (the key is
+      // healthy and stays out of any cooldown this classifier would add).
+      if (!denied && errorEvent.reason !== "aborted" && isModelUnavailable(seen.status, message)) {
+        reportModelUnavailable(model.id, seen.status as number);
+      }
+      const kind: FailureKind | undefined = denied
+        ? undefined
+        : errorEvent.reason === "aborted"
           ? undefined
           : (failureKindForStatus(seen.status, message) ?? failureKindForMessage(message));
 
@@ -493,15 +590,34 @@ export function buildXkiroProvider(api: XkiroApis, build: BuildOptions = {}): Pr
     // visible: a clarified 403 is a better failure than a model silently
     // vanishing from the picker.
     filterModels: (models, credential) => {
+      const key = credential?.type === "api_key" ? credential.key?.trim() : undefined;
+      // Learned refusals are applied first and unconditionally — including
+      // under an explicit XKIRO_TIERS. That variable overrides tier *inference*
+      // ("show me every tier"), and this is not inference: the gateway already
+      // refused this id for this account, so offering it again only produces a
+      // failure the user has seen.
+      const poolKeys = pool.all();
+      // Per-account first: a refusal recorded for THIS credential hides the id
+      // for this credential. `deniedForAll` then covers the case the credential
+      // is one of ours and every account we hold was refused — but it must not
+      // reach a credential that is not in the pool at all: that key belongs to
+      // an account we never measured, and hiding its models on our pool's
+      // evidence is exactly the silent-vanish the comment above forbids.
+      const inPool = key !== undefined && poolKeys.includes(key);
+      const notRefused = models.filter(
+        (model) => !isDeniedFor(model.id, key) && !(inPool && deniedForAll(model.id, poolKeys)),
+      );
+      // Same array back when nothing was learned: callers compare by identity
+      // to tell "hidden" from "untouched".
+      const offered = notRefused.length === models.length ? models : notRefused;
       // An explicit XKIRO_TIERS list is the user overriding entitlement
       // detection; filtering it back down here would silently undo the one
       // thing they asked for.
-      if (tiers !== "auto") return models;
-      const key = credential?.type === "api_key" ? credential.key?.trim() : undefined;
+      if (tiers !== "auto") return offered;
       const entitlement = (key ? cachedEntitlement(key) : undefined) ?? poolEntitlement(pool);
-      if (!entitlement) return models;
+      if (!entitlement) return offered;
       const allowed = new Set(entitlement.tiers);
-      return models.filter((model) => {
+      return offered.filter((model) => {
         const tier = tierOf(model.id);
         return tier === undefined || allowed.has(tier);
       });

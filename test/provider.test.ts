@@ -36,7 +36,18 @@ import {
 import { XkiroKeyPool } from "../keys.ts";
 import { PROVIDER_ID, DEFAULT_BASE_URL, type XkiroApi } from "../models.ts";
 import type { XkiroTier } from "../catalog.ts";
-import { clearEntitlementCache, rememberEntitlement, tierCounts } from "../discovery.ts";
+import {
+  clearEntitlementCache,
+  clearLearnedDenials,
+  clearUnavailable,
+  isModelUnavailableNow,
+  isDeniedFor,
+  learnedTierOf,
+  rememberEntitlement,
+  reportTierDenial,
+  tierCounts,
+  tierOf,
+} from "../discovery.ts";
 
 const K1 = "sk-xt-key-one-1111";
 const K2 = "sk-xt-key-two-2222";
@@ -235,6 +246,8 @@ test("rotation: user cancellation is not a capacity failure", async () => {
 });
 
 test("rotation: a tier 403 surfaces unchanged and parks nobody", async () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
   const fake = fakeApi([
     outcome(fail("This premium model requires an active paid plan or real deposited balance")),
   ]);
@@ -249,6 +262,9 @@ test("rotation: a tier 403 surfaces unchanged and parks nobody", async () => {
 });
 
 test("rotation: the pool size caps the attempts, and the last error is still surfaced", async () => {
+  // The tier-refusal tests above teach this very model id that K1 refuses it,
+  // and a learned refusal reorders the keys on purpose. Isolation first.
+  clearLearnedDenials();
   const fake = fakeApi([outcome(fail("A server error occurred. Please try again."))]);
   const pool = poolOf();
   const api = withKeyRotation(fake.api, pool, { sleep: async () => {} });
@@ -305,6 +321,7 @@ test("auth.resolve: stored credential wins and seeds the pool", async () => {
 
 test("auth.login: a valid key reports its account, an invalid one is not saved", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   const listingFixture = JSON.parse(readFileSync(new URL("./fixtures/models-sample.json", import.meta.url), "utf8"));
   const freeUsage = JSON.parse(readFileSync(new URL("./fixtures/usage-free-account.json", import.meta.url), "utf8"));
   const fetchImpl = (async (input: RequestInfo | URL) => {
@@ -331,6 +348,7 @@ test("auth.login: a valid key reports its account, an invalid one is not saved",
   assert.match(notices[0], /доступно 3\/7/);
 
   clearEntitlementCache(); // the probe above cached K1; a login must re-ask the gateway
+  clearLearnedDenials();
   const rejected = xkiroApiKeyAuth(DEFAULT_BASE_URL, new XkiroKeyPool({ env: {} }), (async () =>
     new Response("{}", { status: 401 })) as unknown as typeof fetch);
   await assert.rejects(
@@ -340,6 +358,7 @@ test("auth.login: a valid key reports its account, an invalid one is not saved",
   );
 
   clearEntitlementCache();
+  clearLearnedDenials();
   const prefixNotices: string[] = [];
   const wrongShape = await xkiroApiKeyAuth(DEFAULT_BASE_URL, new XkiroKeyPool({ env: {} }), fetchImpl).login!({
     signal: new AbortController().signal,
@@ -377,6 +396,7 @@ test("describeEntitlement: readable for both states", () => {
 
 test("buildXkiroProvider: registers the free snapshot offline and filters by entitlement", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   const provider = buildXkiroProvider({ "openai-completions": fakeApi([outcome(succeed("x"))]).api }, {
     env: {},
     baseUrl: DEFAULT_BASE_URL,
@@ -422,6 +442,7 @@ test("balancePool: orders by remaining quota and spreads simultaneous starts", a
 
   const pool = new XkiroKeyPool({ env: { XKIRO_API_KEYS: `${K1},${K2},sk-xt-key-three-3333` } });
   await clearEntitlementCache();
+  clearLearnedDenials();
   const keys = await balancePool(pool, DEFAULT_BASE_URL, { timeoutMs: 1000, fetchImpl: ordered });
   assert.equal(keys.length, 3);
   assert.equal(keys[2], "sk-xt-key-three-3333", "the drained account goes last regardless of shuffle");
@@ -433,6 +454,7 @@ test("balancePool: orders by remaining quota and spreads simultaneous starts", a
   const seen = new Set<string>();
   for (let round = 0; round < 40; round++) {
     clearEntitlementCache();
+    clearLearnedDenials();
     const fresh = new XkiroKeyPool({ env: { XKIRO_API_KEYS: `${K1},${K2},sk-xt-key-three-3333` } });
     let i = 0;
     const fetch2 = (async () => new Response(JSON.stringify(usage(bodies[i++] ?? 0)), { status: 200 })) as unknown as typeof fetch;
@@ -443,6 +465,7 @@ test("balancePool: orders by remaining quota and spreads simultaneous starts", a
 
 test("balancePool: unanswered probes keep their slot behind answering keys", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   const pool = new XkiroKeyPool({ env: { XKIRO_API_KEYS: `${K1},${K2}` } });
   let i = 0;
   const fetchImpl = (async () =>
@@ -506,6 +529,7 @@ test("selectKeysForTier: blocked only when EVERY measured account is free-only",
 
 test("gating: a paid model on a free-only pool is refused without touching the network", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   rememberEntitlement(K1, { tiers: ["free"], probed: true });
   rememberEntitlement(K2, { tiers: ["free"], probed: true });
   const fake = fakeApi([outcome(succeed("pong"))]);
@@ -521,6 +545,7 @@ test("gating: a paid model on a free-only pool is refused without touching the n
 
 test("gating: a mixed pool routes the paid model to the account that can run it", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   rememberEntitlement(K1, { tiers: ["free"], probed: true });
   rememberEntitlement(K2, { tiers: ["free"], probed: true });
   rememberEntitlement(PLAN_KEY, { tiers: ["free", "paid", "premium"], probed: true });
@@ -537,6 +562,7 @@ test("gating: a mixed pool routes the paid model to the account that can run it"
 
 test("gating: XKIRO_BLOCK_GATED=off lets the request through to get a real answer", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   rememberEntitlement(K1, { tiers: ["free"], probed: true });
   rememberEntitlement(K2, { tiers: ["free"], probed: true });
   const fake = fakeApi([outcome(fail("permission_denied"), 403)]);
@@ -554,6 +580,7 @@ test("gating: XKIRO_BLOCK_GATED=off lets the request through to get a real answe
 
 test("gating: an entitlement we never measured must not hide or block anything", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   const fake = fakeApi([outcome(succeed("pong"))]);
   const events = await collect(
     withKeyRotation(fake.api, poolOf(), { sleep: async () => {} }).streamSimple(PAID_MODEL, context, { apiKey: K1, sessionId: "s1" }),
@@ -564,6 +591,7 @@ test("gating: an entitlement we never measured must not hide or block anything",
 
 test("poolEntitlement: union over the pool, undefined when nothing is measured", () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   const pool = poolWithPlan();
   assert.equal(poolEntitlement(pool), undefined);
   rememberEntitlement(K1, { tiers: ["free"], probed: true });
@@ -574,6 +602,7 @@ test("poolEntitlement: union over the pool, undefined when nothing is measured",
 
 test("filterModels: an explicit XKIRO_TIERS list is not filtered back down", async () => {
   clearEntitlementCache();
+  clearLearnedDenials();
   rememberEntitlement(K1, { tiers: ["free"], probed: true });
   const fake = fakeApi([outcome(succeed("x"))]);
   const widened = buildXkiroProvider(
@@ -607,4 +636,186 @@ test("gatedMessage: counts come from the catalog, not from a captured constant",
   const free = tierCounts().free;
   assert.match(message, new RegExp(`Открыта сейчас ${free} `), "the number must track the live catalog");
   assert.ok(!/37 id/.test(message), "no baked-in catalog size");
+});
+
+// ---------------------------------------------------------------------------
+// Learned gating: `access_tier` is a claim and the gateway contradicts it.
+// Probed 2026-10-08 — `meta/muse-spark-1.2-contributor:free` is published as
+// free with a 0/0 price and answers 403 permission_denied ("available to paying
+// customers only"). The tier gate cannot refuse what it believes is free, so the
+// refusal itself has to become the measurement.
+// ---------------------------------------------------------------------------
+
+const MISLABELLED: Model<XkiroApi> = { ...model, id: "meta/muse-spark-1.2-contributor:free" };
+/** The gateway's own body for that id, verbatim (2026-10-08). */
+const PAYING_CUSTOMERS =
+  '403: {"message":"This model is available to paying customers only. Subscribe to a plan or top up your wallet to use it.","type":"permission_error","code":"permission_denied"}';
+
+test("learned gating: the first 403 teaches, the second request never leaves", async () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  rememberEntitlement(K2, { tiers: ["free"], probed: true });
+  assert.equal(tierOf(MISLABELLED.id), undefined, "an id no listing published here yet");
+
+  const refused = fakeApi([outcome(fail(PAYING_CUSTOMERS), 403), outcome(succeed("must not be reached"))]);
+  const pool = poolOf();
+  const api = withKeyRotation(refused.api, pool, { sleep: async () => {} });
+  const first = await collect(api.streamSimple(MISLABELLED, context, { apiKey: K1, sessionId: "s1" }));
+
+  assert.equal(refused.attempts.length, 1, "one round trip buys the fact");
+  assert.equal(first.at(-1)?.type, "error");
+  assert.equal(pool.status().every((entry) => entry.coolingMs === 0), true, "the key is healthy; the model is not");
+  assert.equal(tierOf(MISLABELLED.id), "paid", "the listing said free, the gateway said otherwise");
+  assert.equal(isDeniedFor(MISLABELLED.id, K1), true);
+
+  const again = fakeApi([outcome(succeed("must not be reached either"))]);
+  const second = await collect(
+    withKeyRotation(again.api, pool, { sleep: async () => {} }).streamSimple(MISLABELLED, context, {
+      apiKey: K1,
+      sessionId: "s2",
+    }),
+  );
+  assert.equal(again.attempts.length, 0, "the answer is already known: no request, no 95-second wait");
+  const last = second.at(-1);
+  assert.ok(last && last.type === "error");
+  assert.match(last.error.errorMessage ?? "", /определён по фактическому 403/);
+  assert.match(last.error.errorMessage ?? "", /\/xkiro reset/);
+});
+
+test("learned gating: a tier 403 is never read as a quota signal, whatever its body says", async () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  // "daily" in a 403 body would classify as `quota` by message alone and park a
+  // perfectly good key for five minutes. The tier reading comes first.
+  const fake = fakeApi([outcome(fail("403: available to paying customers only — your daily free quota is separate"), 403)]);
+  const pool = poolOf();
+  await collect(
+    withKeyRotation(fake.api, pool, { sleep: async () => {} }).streamSimple(MISLABELLED, context, { apiKey: K1, sessionId: "s1" }),
+  );
+  assert.equal(fake.attempts.length, 1, "not retried on another key: a 403 is not a capacity failure");
+  assert.equal(pool.status().every((entry) => entry.coolingMs === 0), true);
+  assert.equal(learnedTierOf(MISLABELLED.id), "paid");
+});
+
+test("learned gating: a 403 without tier wording is not learned as a model fact", async () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  // A CDN or a proxy in front of the gateway also answers 403. Guessing "paid"
+  // from the status alone would hide a model that works.
+  const fake = fakeApi([outcome(fail("403 Forbidden"), 403)]);
+  const pool = poolOf();
+  const events = await collect(
+    withKeyRotation(fake.api, pool, { sleep: async () => {} }).streamSimple(MISLABELLED, context, { apiKey: K1, sessionId: "s1" }),
+  );
+  assert.equal(events.at(-1)?.type, "error");
+  assert.equal(learnedTierOf(MISLABELLED.id), undefined);
+  assert.equal(isDeniedFor(MISLABELLED.id, K1), false);
+
+  const again = fakeApi([outcome(succeed("pong"))]);
+  await collect(
+    withKeyRotation(again.api, pool, { sleep: async () => {} }).streamSimple(MISLABELLED, context, { apiKey: K1, sessionId: "s2" }),
+  );
+  assert.equal(again.attempts.length, 1, "still sent: nothing was learned");
+});
+
+test("selectKeysForTier: a learned refusal outranks the entitlement", () => {
+  const freeOnly = { tiers: ["free"] as XkiroTier[], probed: true };
+  const planned = { tiers: ["free", "paid", "premium"] as XkiroTier[], probed: true };
+  const view = (denied: string[]) => ({
+    tierOf: (id: string) => (id === MISLABELLED.id ? ("paid" as const) : undefined),
+    entitlementOf: (key: string) => (key === PLAN_KEY ? planned : freeOnly),
+    deniedOf: (id: string, key: string) => id === MISLABELLED.id && denied.includes(key),
+  });
+
+  assert.deepEqual(selectKeysForTier(MISLABELLED.id, [K1, PLAN_KEY], view([])), { kind: "restricted", keys: [PLAN_KEY] });
+  assert.deepEqual(
+    selectKeysForTier(MISLABELLED.id, [K1, PLAN_KEY], view([PLAN_KEY])),
+    { kind: "restricted", keys: [K1] },
+    "the refused account drops out even though its entitlement covers the tier",
+  );
+  assert.deepEqual(
+    selectKeysForTier(MISLABELLED.id, [K1, PLAN_KEY], view([K1, PLAN_KEY])),
+    { kind: "blocked", tier: "paid" },
+    "every key we hold was refused → nothing left to try",
+  );
+  assert.deepEqual(
+    selectKeysForTier(MISLABELLED.id, [], view([K1])),
+    { kind: "unknown" },
+    "an empty pool has nothing to judge by",
+  );
+});
+
+test("filterModels: a learned refusal hides the id, even under an explicit XKIRO_TIERS", async () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  const fake = fakeApi([outcome(succeed("x"))]);
+  const provider = buildXkiroProvider(
+    { "openai-completions": fake.api },
+    { env: { XKIRO_TIERS: "free,paid,premium" }, baseUrl: DEFAULT_BASE_URL, pool: new XkiroKeyPool({ env: { XKIRO_API_KEYS: K1 } }) },
+  );
+  const all = [...provider.getModels(), MISLABELLED];
+  assert.equal(provider.filterModels!(all, { type: "api_key", key: K1 }), all, "nothing learned yet → the array is untouched");
+
+  reportTierDenial(MISLABELLED.id, K1);
+  const kept = provider.filterModels!(all, { type: "api_key", key: K1 });
+  assert.equal(kept.some((entry) => entry.id === MISLABELLED.id), false, "the picker must stop offering what always 403s");
+  assert.equal(kept.length, all.length - 1);
+  assert.equal(
+    provider.filterModels!(all, { type: "api_key", key: K2 })!.some((entry) => entry.id === MISLABELLED.id),
+    true,
+    "another account was not refused it, so it stays on offer for that one",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Over capacity is not a tier fact and not a key fact: it is "the gateway is
+// not handing this model out this minute". Measured 2026-11-03 — all 19
+// qwen/*:free ids answered 429/503 for minutes on four different accounts,
+// with the accounts' own daily quota untouched.
+// ---------------------------------------------------------------------------
+
+const OVER_CAPACITY =
+  '503: {"message":"The model is temporarily unavailable due to high demand. Please retry in a moment.","type":"server_error","code":"service_unavailable"}';
+
+test("unavailable: the model is marked from the real refusal, and the next request never leaves", async () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  clearUnavailable();
+  rememberEntitlement(K1, { tiers: ["free"], probed: true });
+  rememberEntitlement(K2, { tiers: ["free"], probed: true });
+
+  const refused = fakeApi([outcome(fail(OVER_CAPACITY), 503)]);
+  const pool = poolOf();
+  const first = await collect(
+    withKeyRotation(refused.api, pool, { sleep: async () => {} }).streamSimple(model, context, { apiKey: K1, sessionId: "s1" }),
+  );
+  assert.equal(first.at(-1)?.type, "error");
+  assert.equal(isModelUnavailableNow(model.id), true, "the 503 is a measurement about the model");
+  assert.equal(isDeniedFor(model.id, K1), false, "and NOT a tier refusal: the account was never refused, the model was");
+
+  const again = fakeApi([outcome(succeed("must not be reached"))]);
+  const second = await collect(
+    withKeyRotation(again.api, pool, { sleep: async () => {} }).streamSimple(model, context, { apiKey: K1, sessionId: "s2" }),
+  );
+  assert.equal(again.attempts.length, 0, "no request while the mark is live: the answer is already known");
+  const last = second.at(-1);
+  assert.ok(last && last.type === "error");
+  assert.match(last.error.errorMessage ?? "", /не отдаётся|недоступна/i);
+  assert.match(last.error.errorMessage ?? "", /\/xkiro reset/);
+
+  // A tier refusal must never be recorded here: 403 is about the account.
+  const tierRefusal = fakeApi([outcome(fail(PAYING_CUSTOMERS), 403)]);
+  await collect(
+    withKeyRotation(tierRefusal.api, pool, { sleep: async () => {} }).streamSimple(MISLABELLED, context, { apiKey: K1, sessionId: "s3" }),
+  );
+  assert.equal(isModelUnavailableNow(MISLABELLED.id), false);
+
+  clearUnavailable();
+  const back = fakeApi([outcome(succeed("pong"))]);
+  await collect(
+    withKeyRotation(back.api, pool, { sleep: async () => {} }).streamSimple(model, context, { apiKey: K1, sessionId: "s4" }),
+  );
+  assert.equal(back.attempts.length, 1, "after the window/reset the model is tried again");
 });

@@ -11,16 +11,27 @@ import {
   clearEntitlementCache,
   cachedEntitlement,
   clearLastGoodListing,
+  clearLearnedDenials,
+  clearUnavailable,
+  deniedForAll,
   ENTITLEMENT_TTL_MS,
   entitlementFromUsage,
   fetchListing,
   fetchXkiroModels,
+  isDeniedFor,
+  isModelUnavailableNow,
+  knownTiers,
+  learnedDenials,
+  learnedTierOf,
   parseListing,
   prefetchEntitlements,
   probeEntitlement,
   rememberEntitlement,
   registerTiers,
+  reportModelUnavailable,
+  reportTierDenial,
   tierOf,
+  unavailableModels,
   ALL_TIERS,
   FREE_ONLY,
 } from "../discovery.ts";
@@ -239,4 +250,123 @@ test("prefetchEntitlements: measures every account in one pass", async () => {
   assert.equal(measured.size, 3);
   assert.equal(hits, 3, "once per account, in parallel");
   assert.ok(cachedEntitlement("b"), "and the result is what the gate will later read");
+});
+
+// ---------------------------------------------------------------------------
+// Learned 403s: the listing's `access_tier` is a claim, and the gateway can
+// contradict it (probed 2026-10-08: `meta/muse-spark-1.2-contributor:free` is
+// published as free with a 0/0 price and refuses a plan-less account).
+// ---------------------------------------------------------------------------
+
+const FREE_ID = "minimax/minimax-m3:free";
+const PAID_ID = "openai/gpt-5.6-sol";
+
+test("learned denial: a 403 on a free-listed id re-tiers it, and tierOf reports the correction", () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  registerTiers(parseListing(listingFixture));
+  assert.equal(tierOf(FREE_ID), "free", "the listing's claim before any measurement");
+
+  rememberEntitlement("sk-xt-free-only", { tiers: FREE_ONLY, probed: true });
+  assert.equal(reportTierDenial(FREE_ID, "sk-xt-free-only"), "paid", "refused while holding only free → it sits above free");
+  assert.equal(tierOf(FREE_ID), "paid", "and every consumer of tierOf now sees the corrected tier");
+  assert.equal(learnedTierOf(FREE_ID), "paid");
+  assert.equal(isDeniedFor(FREE_ID, "sk-xt-free-only"), true);
+  assert.equal(isDeniedFor(FREE_ID, "sk-xt-someone-else"), false, "a refusal belongs to the account that got it");
+
+  clearLearnedDenials();
+  assert.equal(tierOf(FREE_ID), "free", "the correction is process state, not a rewrite of the catalog");
+  assert.equal(learnedTierOf(FREE_ID), undefined);
+});
+
+test("learned denial: an unmeasured account is assumed free-only, like everywhere else", () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  registerTiers(parseListing(listingFixture));
+  assert.equal(reportTierDenial(FREE_ID, "sk-xt-never-probed"), "paid");
+  assert.equal(isDeniedFor(FREE_ID, "sk-xt-never-probed"), true);
+});
+
+test("learned denial: escalates with the refused account, and never downgrades the listing", () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  registerTiers(parseListing(listingFixture));
+
+  // A plan-holding account refused leaves no tier above it: premium is the
+  // honest answer, and the per-account refusal is what keeps the id out.
+  rememberEntitlement("sk-xt-plan", { tiers: ALL_TIERS, probed: true });
+  assert.equal(reportTierDenial(FREE_ID, "sk-xt-plan"), "premium");
+  assert.equal(tierOf(FREE_ID), "premium");
+
+  // A later refusal from a weaker account must not undo what a stronger one taught.
+  rememberEntitlement("sk-xt-weak", { tiers: FREE_ONLY, probed: true });
+  assert.equal(reportTierDenial(FREE_ID, "sk-xt-weak"), "premium");
+
+  // An id the listing already gates keeps its published tier.
+  assert.equal(reportTierDenial(PAID_ID, "sk-xt-weak"), "paid");
+  assert.equal(learnedTierOf(PAID_ID), undefined, "nothing was corrected, so nothing was learned");
+});
+
+test("learned denial: deniedForAll needs every key, and learnedDenials reports the lie", () => {
+  clearEntitlementCache();
+  clearLearnedDenials();
+  registerTiers(parseListing(listingFixture));
+  rememberEntitlement("sk-xt-a", { tiers: FREE_ONLY, probed: true });
+
+  assert.equal(deniedForAll(FREE_ID, []), false, "an empty pool has nothing to judge by");
+  assert.equal(deniedForAll(FREE_ID, ["sk-xt-a"]), false);
+  reportTierDenial(FREE_ID, "sk-xt-a");
+  assert.equal(deniedForAll(FREE_ID, ["sk-xt-a"]), true);
+  assert.equal(deniedForAll(FREE_ID, ["sk-xt-a", "sk-xt-b"]), false, "one unrefused key is enough to keep trying");
+
+  const rows = learnedDenials();
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0], { id: FREE_ID, listed: "free", tier: "paid", accounts: 1 });
+
+  const known = knownTiers().find((row) => row.id === FREE_ID);
+  assert.deepEqual(known, { id: FREE_ID, tier: "paid", learned: true }, "/xkiro models can tell a claim from a measurement");
+  assert.equal(knownTiers().find((row) => row.id === PAID_ID)?.learned, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Over-capacity memory. Unlike a 403 (a tier fact, kept until `/xkiro reset`),
+// "the gateway is not handing this model out right now" expires: measured
+// 2026-11-03, qwen3.7-flash:free answered 200 in the morning and 429/503 by
+// mid-day. Hiding it for the rest of the session would be wrong by evening.
+// ---------------------------------------------------------------------------
+
+test("unavailable: a capacity refusal expires, and a second report extends it", () => {
+  clearUnavailable();
+  const t0 = 1_000_000;
+  const ID = "qwen/qwen3.8-max:free";
+
+  assert.equal(isModelUnavailableNow(ID, t0), false, "nothing learned yet");
+
+  reportModelUnavailable(ID, 503, t0);
+  assert.equal(isModelUnavailableNow(ID, t0 + 60_000), true);
+  assert.equal(isModelUnavailableNow(ID, t0 + 14 * 60_000), true, "15-minute window for a 503");
+  assert.equal(isModelUnavailableNow(ID, t0 + 16 * 60_000), false, "expired: the model may be back");
+
+  const FAST = "qwen/qwen3-max:free";
+  reportModelUnavailable(FAST, 429, t0);
+  assert.equal(isModelUnavailableNow(FAST, t0 + 4 * 60_000), true, "5-minute window for a 429");
+  assert.equal(isModelUnavailableNow(FAST, t0 + 6 * 60_000), false);
+
+  reportModelUnavailable(FAST, 429, t0 + 4 * 60_000);
+  assert.equal(isModelUnavailableNow(FAST, t0 + 8 * 60_000), true, "the second refusal restarts the clock");
+  assert.equal(isModelUnavailableNow("never/seen", t0), false);
+
+  reportModelUnavailable(ID, 503, t0);
+  reportModelUnavailable(FAST, 429, t0);
+  const listed = unavailableModels(t0 + 60_000);
+  assert.deepEqual(
+    listed.map((row) => row.id),
+    [FAST, ID],
+    "sorted ('-' sorts before '.'), both present",
+  );
+  assert.ok(listed.every((row) => row.secondsLeft > 0));
+
+  clearUnavailable();
+  assert.equal(isModelUnavailableNow(ID, t0), false, "/xkiro reset forgets");
+  assert.deepEqual(unavailableModels(t0), []);
 });
